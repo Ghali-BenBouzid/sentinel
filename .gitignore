@@ -21,3 +21,6 @@ logs.log
 .DS_Store
 .idea/
 .vscode/
+
+# Local tooling cache
+.impeccable/
