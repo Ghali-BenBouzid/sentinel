@@ -62,7 +62,7 @@ class FD001:
     train: pd.DataFrame
     test: pd.DataFrame
     rul_truth: pd.Series
-    rul_cap: int
+    rul_cap: int | None
 
 
 def download_fd001(data_dir: Path) -> dict[str, Path]:
@@ -79,7 +79,15 @@ def download_fd001(data_dir: Path) -> dict[str, Path]:
         if not dest.exists():
             url = f"{_MIRROR_BASE}/{filename}"
             print(f"[data] downloading {filename} ...")
-            urlretrieve(url, dest)
+            # Download to a temp path and atomically rename, so an interrupted
+            # transfer never leaves a truncated file the cache guard would trust.
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            try:
+                urlretrieve(url, tmp)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            tmp.replace(dest)
         paths[name] = dest
     return paths
 
@@ -156,7 +164,7 @@ def load_fd001(
     )
 
     _verify(train, test, rul_truth)
-    return FD001(train=train, test=test, rul_truth=rul_truth, rul_cap=rul_cap or 0)
+    return FD001(train=train, test=test, rul_truth=rul_truth, rul_cap=rul_cap)
 
 
 def _verify(train: pd.DataFrame, test: pd.DataFrame, rul_truth: pd.Series) -> None:
