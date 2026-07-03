@@ -21,7 +21,10 @@ sentinel/
     features.py  # rolling-window (mean/std/slope) feature engineering
     automl.py    # PyCaret train + compare + finalize + evaluate + persist
   pipeline.py    # end-to-end entrypoint
+tests/
+  test_core_helpers.py   # fast offline unit tests for the pure DS-core helpers
 docs/learning/01-ds-core.md   # how the pipeline fits together (learning note)
+.github/workflows/ci.yml      # CI: uv sync + ruff + pytest on pushes/PRs to main
 ```
 
 ## Setup
@@ -36,6 +39,8 @@ uv sync   # fetches Python 3.11 if needed, creates .venv, installs the locked de
 
 Dependencies are declared in `pyproject.toml` and fully pinned in `uv.lock`, so
 `uv sync` reproduces the exact set that was verified.
+`uv sync` also installs the dev tooling (`pytest`, `ruff`) declared in the
+`dev` dependency group.
 
 ## Run the M1 pipeline
 
@@ -58,3 +63,18 @@ committed).
 
 On a clean run (seed 42), the best model is **Extra Trees Regressor** with a
 held-out FD001 test score of roughly **RMSE 17.1 / MAE 11.9 / R2 0.82**.
+
+## Tests, lint, and CI
+
+The unit tests in `tests/` are fast and fully offline - they exercise the pure
+DS-core helpers (RUL derivation, rolling-window featurization) on tiny
+synthetic frames, with no download and no model training.
+
+```bash
+uv run pytest        # run the tests
+uv run ruff check .  # lint (pyflakes + pycodestyle + import order)
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs both on every push and pull
+request targeting `main`, using `uv sync --locked` against the committed
+`uv.lock`.
