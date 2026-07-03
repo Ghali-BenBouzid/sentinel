@@ -47,5 +47,7 @@ def test_build_features_shape_and_per_unit_isolation():
     u2 = feats[feats["unit"] == 2]
     assert (u2["s1_slope"] == 0.0).all()
     # Unit 1 rises 2 units/cycle -> trailing 2-cycle slope is 2.0.
-    u1_last_slope = feats[(feats["unit"] == 1) & (feats["cycle"] == 3)]["s1_slope"].iloc[0]
+    u1_last_slope = feats[(feats["unit"] == 1) & (feats["cycle"] == 3)][
+        "s1_slope"
+    ].iloc[0]
     assert u1_last_slope == 2.0
