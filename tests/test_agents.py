@@ -17,6 +17,7 @@ from sentinel.agents.interviewer import collect_config
 from sentinel.agents.monitor import decide, run_monitor
 from sentinel.agents.report_writer import write_report
 from sentinel.agents.state import InterviewConfig
+from sentinel.config import get_settings
 from sentinel.llm.provider import (
     AnthropicProvider,
     GroqProvider,
@@ -36,6 +37,14 @@ class FakeProvider:
         return self.reply
 
 
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """`get_provider` reads cached settings; keep env changes from leaking."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 # --- provider selection --------------------------------------------------
 
 
@@ -43,10 +52,12 @@ def test_get_provider_selects_by_env(monkeypatch):
     monkeypatch.setenv("SENTINEL_LLM_PROVIDER", "anthropic")
     # Avoid constructing a real SDK client / needing a key.
     monkeypatch.setattr(AnthropicProvider, "__init__", lambda self, model, api_key=None: None)
+    get_settings.cache_clear()  # settings are cached; pick up the new env
     assert isinstance(get_provider("smart"), AnthropicProvider)
 
     monkeypatch.setenv("SENTINEL_LLM_PROVIDER", "groq")
     monkeypatch.setattr(GroqProvider, "__init__", lambda self, model, api_key=None: None)
+    get_settings.cache_clear()
     assert isinstance(get_provider("cheap"), GroqProvider)
 
 
@@ -56,6 +67,7 @@ def test_get_provider_maps_tier_to_model(monkeypatch):
     monkeypatch.setattr(
         AnthropicProvider, "__init__", lambda self, model, api_key=None: captured.update(model=model)
     )
+    get_settings.cache_clear()
     get_provider("smart")
     assert captured["model"] == "claude-sonnet-5"
     get_provider("cheap")
@@ -64,6 +76,7 @@ def test_get_provider_maps_tier_to_model(monkeypatch):
 
 def test_get_provider_rejects_unknown(monkeypatch):
     monkeypatch.setenv("SENTINEL_LLM_PROVIDER", "bogus")
+    get_settings.cache_clear()
     with pytest.raises(ValueError):
         get_provider("smart")
     with pytest.raises(ValueError):

@@ -1750,6 +1750,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pycaret" },
+    { name = "pydantic-settings" },
     { name = "scikit-learn" },
 ]
 
@@ -1767,6 +1768,7 @@ requires-dist = [
     { name = "numpy", specifier = "==1.26.4" },
     { name = "pandas", specifier = "==2.1.4" },
     { name = "pycaret", specifier = "==3.3.2" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "scikit-learn", specifier = "==1.4.2" },
 ]
 

@@ -16,8 +16,9 @@ dicts (the OpenAI/Anthropic common shape); the string reply is returned as-is.
 
 from __future__ import annotations
 
-import os
 from typing import Protocol, runtime_checkable
+
+from ..config import get_settings
 
 # Model tiers per provider. "smart" is used where judgment/extraction matters
 # (interviewer); "cheap" for straightforward text generation (report writer).
@@ -25,8 +26,6 @@ _MODELS = {
     "anthropic": {"smart": "claude-sonnet-5", "cheap": "claude-haiku-4-5"},
     "groq": {"smart": "llama-3.3-70b-versatile", "cheap": "llama-3.1-8b-instant"},
 }
-
-DEFAULT_PROVIDER = "groq"  # free tier -> zero API cost out of the box
 
 
 @runtime_checkable
@@ -86,13 +85,18 @@ class GroqProvider:
 def get_provider(tier: str = "smart", name: str | None = None) -> Provider:
     """Build the configured provider for a model ``tier`` (``"smart"``/``"cheap"``).
 
-    ``name`` overrides the `SENTINEL_LLM_PROVIDER` env var (default ``groq``).
-    Raises ``ValueError`` for an unknown provider/tier - fail loud, don't guess.
+    Provider choice and API keys come from `get_settings()` (env + `.env`); the
+    resolved key is passed explicitly to the concrete provider. ``name`` overrides
+    the configured provider. Raises ``ValueError`` for an unknown provider/tier -
+    fail loud, don't guess.
     """
-    name = (name or os.environ.get("SENTINEL_LLM_PROVIDER", DEFAULT_PROVIDER)).lower()
+    settings = get_settings()
+    name = (name or settings.sentinel_llm_provider).lower()
     if name not in _MODELS:
         raise ValueError(f"unknown SENTINEL_LLM_PROVIDER {name!r}; expected one of {list(_MODELS)}")
     if tier not in _MODELS[name]:
         raise ValueError(f"unknown model tier {tier!r}; expected 'smart' or 'cheap'")
     model = _MODELS[name][tier]
-    return AnthropicProvider(model) if name == "anthropic" else GroqProvider(model)
+    if name == "anthropic":
+        return AnthropicProvider(model, api_key=settings.anthropic_api_key)
+    return GroqProvider(model, api_key=settings.groq_api_key)

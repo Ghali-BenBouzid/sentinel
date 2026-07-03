@@ -24,8 +24,9 @@ sentinel/
     features.py  # rolling-window (mean/std/slope) feature engineering
     automl.py    # PyCaret train + compare + finalize + evaluate + persist
   pipeline.py    # end-to-end M1 entrypoint
+  config.py      # 12-factor settings (pydantic-settings): provider choice + API keys from env/.env
   llm/
-    provider.py  # LLM seam: Protocol + AnthropicProvider + GroqProvider (env-selected)
+    provider.py  # LLM seam: Protocol + AnthropicProvider + GroqProvider (config-selected)
   agents/
     state.py         # graph state + the config the interviewer collects
     graph.py         # the StateGraph: orchestrator routing + node wiring
@@ -37,6 +38,7 @@ sentinel/
 tests/
   test_core_helpers.py   # fast offline unit tests for the pure DS-core helpers
   test_agents.py         # fast offline tests for the agent layer (faked LLM + training)
+.env.example                     # template for the .env config (copy to .env, add your key)
 docs/learning/01-ds-core.md      # how the DS core fits together (learning note)
 docs/learning/02-agent-layer.md  # how the agent layer fits together (learning note)
 docs/pdm-agent-design.md         # the agent-layer design this milestone implements
@@ -90,21 +92,32 @@ works and `docs/pdm-agent-design.md` for the design.
 ### Choosing an LLM provider
 
 The graph never imports a vendor SDK - it calls the seam in
-`sentinel/llm/provider.py`. Pick the provider with the `SENTINEL_LLM_PROVIDER`
-env var and set that provider's API key:
+`sentinel/llm/provider.py`, which reads its config from `sentinel/config.py`
+(pydantic-settings). Config comes from the environment **and** from a `.env`
+file (env wins over `.env`). Copy the template and fill in your key:
 
-| `SENTINEL_LLM_PROVIDER` | API key env var     | Notes                              |
-| ----------------------- | ------------------- | ---------------------------------- |
-| `groq` (default)        | `GROQ_API_KEY`      | Free tier - zero API cost. Default so the demo runs out of the box. |
-| `anthropic`             | `ANTHROPIC_API_KEY` | Claude (Sonnet for the interviewer, Haiku for the report writer).   |
+```bash
+cp .env.example .env      # then edit .env and set your key
+```
 
-Get a free Groq key at <https://console.groq.com>. No key is committed; both
-providers read their key from the environment only.
+`.env` fields (documented in `.env.example`):
+
+| Field                   | Notes                                                                        |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `SENTINEL_LLM_PROVIDER` | `groq` (default, free tier - zero API cost) or `anthropic`.                  |
+| `GROQ_API_KEY`          | Free Groq key from <https://console.groq.com>. `GROK_API_KEY` also works as an alias. |
+| `ANTHROPIC_API_KEY`     | Claude key (Sonnet for the interviewer, Haiku for the report writer); only if provider is `anthropic`. |
+
+`.env` is gitignored - only `.env.example` is committed, so real keys are never
+checked in. Note: **Groq** (groq.com, fast Llama inference - what this app uses)
+is a different service from xAI's **Grok**; the key is for Groq, but a habitual
+`GROK_API_KEY` spelling is accepted too.
 
 ### Run the agent graph end to end
 
+pydantic-settings loads `.env` automatically - no `export` needed:
+
 ```bash
-export GROQ_API_KEY=...                    # or: SENTINEL_LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=...
 uv run python -m sentinel.agents           # scripted interview, runs unattended
 uv run python -m sentinel.agents --interactive   # answer the interview yourself
 ```

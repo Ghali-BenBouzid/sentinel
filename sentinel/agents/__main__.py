@@ -15,8 +15,8 @@ the flow is visible.
 from __future__ import annotations
 
 import argparse
-import os
 
+from ..config import get_settings
 from ..llm.provider import get_provider
 from .graph import build_graph
 from .training import run_training
@@ -49,8 +49,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    provider_name = os.environ.get("SENTINEL_LLM_PROVIDER", "groq")
-    print(f"[agent] provider={provider_name} (set SENTINEL_LLM_PROVIDER to change)\n")
+    provider_name = get_settings().sentinel_llm_provider
+    print(f"[agent] provider={provider_name} (set SENTINEL_LLM_PROVIDER in env or .env)\n")
 
     ask = input if args.interactive else _scripted_ask()
     configurable = {

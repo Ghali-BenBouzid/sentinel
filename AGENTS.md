@@ -22,8 +22,12 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   `provider_cheap`, `train_fn`, `ticket_dir`. This is what lets `tests/test_agents.py`
   run the whole graph offline with fakes - no live LLM, no PyCaret.
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
-  Never import `anthropic`/`groq` outside that file. Provider is env-selected:
-  `SENTINEL_LLM_PROVIDER=groq|anthropic` (default groq = free tier); keys read from
-  `GROQ_API_KEY` / `ANTHROPIC_API_KEY` env only, never committed.
+  Never import `anthropic`/`groq` outside that file.
+- Config is 12-factor via `sentinel/config.py` (pydantic-settings, `get_settings()` is
+  `lru_cache`d): reads env + a `.env` file (env wins). `get_provider` reads it - do not
+  read `os.environ` for config elsewhere. Fields: `SENTINEL_LLM_PROVIDER` (groq default),
+  `GROQ_API_KEY` (accepts `GROK_API_KEY` alias - captain mistypes "GROK"), `ANTHROPIC_API_KEY`.
+  Only `.env.example` is committed; `.env` is gitignored. Tests that change these env vars
+  must call `get_settings.cache_clear()` (see the autouse fixtures).
 - Run end to end: `uv run python -m sentinel.agents` (scripted, unattended) or
   `--interactive`. Monitor's mock action writes tickets to `artifacts/tickets/`.
