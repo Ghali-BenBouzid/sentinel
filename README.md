@@ -26,26 +26,21 @@ docs/learning/01-ds-core.md   # how the pipeline fits together (learning note)
 
 ## Setup
 
-PyCaret is version-sensitive and needs **Python 3.9-3.11**. The verified set
-runs on **Python 3.11**.
+The project is managed with [uv](https://docs.astral.sh/uv/). PyCaret is
+version-sensitive and needs **Python 3.9-3.11**; `pyproject.toml` pins the
+project to **Python 3.11** (the version verified end-to-end).
 
 ```bash
-# with uv (recommended - also fetches Python 3.11):
-uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -r requirements.txt
-
-# or with a system python3.11:
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync   # fetches Python 3.11 if needed, creates .venv, installs the locked deps
 ```
 
-`requirements.txt` pins the direct deps; `requirements.lock.txt` is the full
-transitive lock that was actually verified end-to-end.
+Dependencies are declared in `pyproject.toml` and fully pinned in `uv.lock`, so
+`uv sync` reproduces the exact set that was verified.
 
 ## Run the M1 pipeline
 
 ```bash
-.venv/bin/python -m sentinel.pipeline
+uv run python -m sentinel.pipeline
 ```
 
 This downloads/caches FD001 under `data/`, builds features, compares ~11 model
