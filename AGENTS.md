@@ -23,6 +23,14 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   run the whole graph offline with fakes - no live LLM, no PyCaret.
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
   Never import `anthropic`/`groq` outside that file.
+- **Domain knowledge lives in `sentinel/agents/domain_context.py`** (datasets/metrics
+  glossary), not in prompt strings. The report writer and interviewer inject
+  `domain_context.glossary()` for grounding. Adding a dataset/metric/model/technique =
+  one dict entry, nothing else. The report_writer prompt is deliberately
+  grounding-constrained (TIDD-EC system Do/Don't rules: cite only verbatim METRICS
+  numbers, never derive/transform - this killed a real "square root of RMSE" fabrication
+  on the weak free-tier model). Do not loosen those rules or move numbers out of the
+  single METRICS block.
 - Config is 12-factor via `sentinel/config.py` (pydantic-settings, `get_settings()` is
   `lru_cache`d): reads env + a `.env` file (env wins). `get_provider` reads it - do not
   read `os.environ` for config elsewhere. Fields: `SENTINEL_LLM_PROVIDER` (groq default),

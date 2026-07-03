@@ -31,8 +31,9 @@ sentinel/
     state.py         # graph state + the config the interviewer collects
     graph.py         # the StateGraph: orchestrator routing + node wiring
     interviewer.py   # human-facing sub-agent (code owns agenda, LLM extracts)
-    report_writer.py # TrainResult -> plain-language report (the learning sub-agent)
+    report_writer.py # TrainResult -> plain-language report (grounded, no-fabrication prompt)
     monitor.py       # steps through readings, decides alert/report/mock-action
+    domain_context.py # extensible glossary (datasets/metrics) injected into the prompts
     training.py      # thin wrapper that runs the M1 DS core from an InterviewConfig
     __main__.py      # end-to-end runnable: interview -> train -> report -> monitor
 tests/

@@ -18,9 +18,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import domain_context
 from .state import AgentState, append_log
 
 WARN_FACTOR = 2.0  # report (not alert) when RUL is within this multiple of the threshold
+
+# The threshold is a Remaining-Useful-Life count, so ticket wording uses the same
+# unit the glossary defines for the dataset (single source of truth for "cycles").
+_RUL_UNITS = domain_context.DATASETS["fd001"].units
 
 
 def decide(predicted_rul: float, threshold: int, warn_factor: float = WARN_FACTOR) -> str:
@@ -42,7 +47,10 @@ def _write_ticket(ticket_dir: Path, unit: int, predicted_rul: float, threshold: 
                 "unit": unit,
                 "predicted_rul": round(predicted_rul, 1),
                 "threshold": threshold,
-                "message": f"Unit {unit} predicted RUL {predicted_rul:.1f} <= {threshold}; schedule maintenance.",
+                "message": (
+                    f"Unit {unit} predicted RUL {predicted_rul:.1f} {_RUL_UNITS} "
+                    f"<= {threshold} {_RUL_UNITS}; schedule maintenance."
+                ),
             },
             indent=2,
         )

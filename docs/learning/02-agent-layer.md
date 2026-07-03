@@ -113,6 +113,47 @@ crashing the graph. The LLM does the fuzzy part (free text -> structure) and
 nothing else. That's why it's testable with a fake provider that just returns a
 fixed JSON string.
 
+### The report writer: a worked example of a grounded, no-fabrication prompt
+
+`report_writer.py` used to be the "rewrite it yourself" exercise. It isn't any
+more, and *why* it changed is itself the lesson. Run live on the free Groq/Llama
+model, the old one-paragraph prompt produced this: predictions are "off by
+approximately 13.45 cycles (square root of 17.09)". That is wrong three ways -
+`sqrt(17.09)` is 4.13, not 13.45; you don't take the square root of an RMSE at
+all (RMSE is *already* the error in cycles); and it called RMSE "Mean Squared
+Error". A weak model, handed numbers with no explanation, **invents an
+interpretation**. So the prompt is now engineered against exactly that. Three
+ideas, all visible in `write_report`:
+
+1. **Ground the model in a glossary, don't assume it knows the domain.**
+   `sentinel/agents/domain_context.py` is a single source of plain-language truth:
+   for each dataset and metric, what it is, its units, and how to read it
+   *honestly* - RMSE's entry literally says "do not derive, transform, or take the
+   square root of it." `write_report` injects `domain_context.glossary()` into the
+   prompt as `<glossary>` context. The interviewer injects the same block, so the
+   whole graph shares one vocabulary.
+
+2. **Hard-constrain against fabrication (structure it like a real framework).**
+   The prompt follows TIDD-EC (Task / Instructions / Do / Don't / Examples /
+   Context): a *system* message carries the role and an explicit Do/Don't list -
+   "state only numbers that appear verbatim in the METRICS block", "never take a
+   square root / ratio / average of a provided metric", "if a number isn't
+   provided, omit the claim". The *user* message carries the context (glossary),
+   the data, and the task. The bans are specific because they target observed
+   failures, not hypotheticals.
+
+3. **Give it exactly one numeric source.** The leaderboard is passed as model
+   *names only* - no second table of numbers to mis-transcribe. Every number the
+   report may cite lives in the one `METRICS` block, so "does this number trace
+   back to the metrics?" has a yes/no answer. `test_report_only_cites_grounded_numbers`
+   encodes that property.
+
+The **extensible glossary** is the part to internalize: supporting a new dataset,
+metric, model, or technique is adding one entry to a dict in `domain_context.py` -
+the render helpers and every prompt pick it up automatically (`glossary()` even
+grows its own `MODELS:`/`TECHNIQUES:` sections once those dicts are non-empty).
+The domain knowledge lives in *one* place, not smeared across prompt strings.
+
 ---
 
 ## 4. Why the orchestrator is "woken by events", not polling
@@ -211,15 +252,15 @@ the graph asked for "something with `.complete`", and that's all a fake needs to
 
 ## Try it yourself
 
-Good rewrite exercises, in increasing difficulty:
+Good exercises, in increasing difficulty:
 
-1. **Rebuild the report writer from its docstring.** Delete the *body* of
-   `write_report()` in `report_writer.py` and rebuild it using only its docstring
-   and the `Provider` protocol - input is a `TrainResult` (`.leaderboard`,
-   `.best_model`, `.metrics`), output is text via `provider.complete(...)`. The
-   graph wiring around it (`report_writer_node`) does not need to change, and
-   `test_write_report_feeds_metrics_to_provider` still has to pass. This is the
-   cleanest way to feel how a node and a sub-agent relate.
+1. **Extend the glossary, then read the report change.** Add one `MODELS` entry to
+   `domain_context.py` (e.g. `"et": "Extra Trees - an ensemble of randomized
+   decision trees."`) and re-run `python -m sentinel.agents`. Nothing else changes,
+   yet the report can now name the model family correctly - that's the extensible
+   glossary paying off. Then try tightening the report prompt's Do/Don't rules and
+   watch grounding behaviour shift. This is the cleanest way to feel how the
+   grounding layer and a sub-agent relate.
 2. **Add a `best_model_changed` event.** The design lists it as a wake reason.
    Give the trainer a way to detect that this run's best model differs from the last,
    set that event, and add a route for it (e.g. straight to the report writer with a

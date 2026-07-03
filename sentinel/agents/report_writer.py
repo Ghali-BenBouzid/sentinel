@@ -1,20 +1,56 @@
 """Report writer sub-agent.
 
-The simplest sub-agent, and the one to rebuild as a learning exercise (see
-`docs/learning/02-agent-layer.md`): one function, `write_report`, that turns a
-finished AutoML run into a plain-language report using only the `Provider` seam.
+A worked example of a well-engineered, grounding-constrained data-explaining
+prompt (see `docs/learning/02-agent-layer.md` for the why). `write_report` turns
+a finished AutoML run into a plain-language report using only the `Provider`
+seam, and is hard-constrained against fabricating or transforming numbers - the
+failure that once made a weak model "explain" RMSE by taking its square root.
 
-`report_writer_node` is the thin LangGraph wrapper around it - it pulls the
-`TrainResult` and the cheap provider out of the graph, calls `write_report`, and
-records the text back into state. The wiring does not depend on how
-`write_report` builds its prompt, which is what makes it safe to rewrite.
+The prompt follows the TIDD-EC framework (Task, Instructions, Do, Don't,
+Examples, Context): a system message carries the role + the Do/Don't rules, and
+a user message carries the Context (the domain glossary), the grounded data, and
+the task. It reads its domain knowledge from `domain_context.py`, so adding a new
+metric or dataset there flows into the report with no change here.
+
+`report_writer_node` is the thin LangGraph wrapper - it pulls the `TrainResult`
+and the cheap provider out of the graph, calls `write_report`, and records the
+text back into state. The wiring does not depend on how the prompt is built.
 """
 
 from __future__ import annotations
 
 from ..core.automl import TrainResult
 from ..llm.provider import Provider
+from . import domain_context
 from .state import AgentState, InterviewConfig, append_log
+
+# System message: role + the hard Do/Don't rules (TIDD-EC). These are what keep a
+# weak model honest - every reported number must be reproduced verbatim, never
+# derived. The specific bans (square root, relabelling) target real observed
+# failures, not hypotheticals.
+_SYSTEM_PROMPT = (
+    "You are a predictive-maintenance analyst who writes short, honest, "
+    "plain-language reports about model-training runs for a non-expert reader.\n\n"
+    "You reason ONLY from the numbers and glossary you are given. Follow these "
+    "rules without exception.\n\n"
+    "DO:\n"
+    "- State only numeric values that appear verbatim in the METRICS block you are given.\n"
+    "- Use the exact metric names and units from the GLOSSARY (RMSE is Root Mean Squared "
+    "Error, measured in cycles; MAE is Mean Absolute Error, in cycles; R2 is unitless).\n"
+    "- When you want to say how far off the model is on average, quote the provided MAE.\n"
+    "- Explain the result in practical terms (cycles of remaining engine life) using only "
+    "the glossary and the provided metrics.\n\n"
+    "DO NOT:\n"
+    "- Do NOT compute, derive, transform, recompute, or infer any new number. Never take a "
+    "square root, square, ratio, sum, average, or percentage of a provided metric, and never "
+    "invent counts or 'approximately X' figures that are not in the METRICS block.\n"
+    "- Do NOT treat RMSE as a value to convert into an error - RMSE is ALREADY the error "
+    "magnitude in cycles. Do not take its square root or otherwise transform it.\n"
+    "- Do NOT rename or relabel metrics (RMSE is Root Mean Squared Error, never 'Mean Squared "
+    "Error').\n"
+    "- If a number you would like to cite is not in the METRICS block, omit that claim rather "
+    "than inventing or calculating it."
+)
 
 
 def write_report(
@@ -22,7 +58,7 @@ def write_report(
     provider: Provider,
     config: InterviewConfig | None = None,
 ) -> str:
-    """Turn a finished AutoML run into a short plain-language report.
+    """Turn a finished AutoML run into a short, grounded plain-language report.
 
     Inputs:
       - `result`: the M1 `TrainResult` - `.leaderboard` (a ranked DataFrame),
@@ -33,34 +69,55 @@ def write_report(
         user's stated framing and success metric.
 
     Output: the report text the LLM returns (a few short paragraphs). No side
-    effects - the caller decides what to do with the string.
+    effects - the caller decides what to do with the string. The prompt is
+    hard-constrained so every number in the report traces back to `result.metrics`.
     """
-    lb = result.leaderboard
-    cols = [c for c in ["Model", "MAE", "RMSE", "R2"] if c in lb.columns]
-    leaderboard_text = lb[cols].head(5).to_string(index=False) if cols else lb.head(5).to_string()
     m = result.metrics
+    # Leaderboard is reduced to model *names* only: the METRICS block is the single
+    # numeric source, so there is no second table of numbers for the model to
+    # (mis)transcribe. Every number the report may cite lives in one place.
+    lb = result.leaderboard
+    if "Model" in lb.columns:
+        ranked = ", ".join(str(name) for name in lb["Model"].head(5))
+    else:
+        ranked = ", ".join(str(name) for name in lb.index[:5])
 
-    context = ""
+    goal = ""
     if config is not None:
-        context = (
-            f"The user framed this as: {config.framing}\n"
-            f"They defined success as: {config.success_metric}\n"
+        goal = (
+            "\n<user_goal>\n"
+            f"How the user framed the problem: {config.framing}\n"
+            f"How the user defined success: {config.success_metric}\n"
+            "</user_goal>\n"
         )
 
-    prompt = (
-        "You are a predictive-maintenance analyst. Write a short, plain-language "
-        "report (3-4 short paragraphs, no jargon dumps) on a model-training run "
-        "for turbofan Remaining Useful Life (RUL) prediction.\n\n"
-        f"{context}\n"
+    user_prompt = (
+        "<glossary>\n"
+        f"{domain_context.glossary()}\n"
+        "</glossary>\n\n"
+        "<run>\n"
         f"Best model: {type(result.best_model).__name__}\n"
-        f"Held-out test metrics: RMSE={m['rmse']:.2f} cycles, "
-        f"MAE={m['mae']:.2f} cycles, R2={m['r2']:.3f}\n\n"
-        f"Top of the model comparison leaderboard:\n{leaderboard_text}\n\n"
-        "Explain which model won and how well it predicts, what the error means "
-        "in practical terms (cycles of remaining life), and whether it meets the "
-        "stated success bar. Do not invent numbers beyond those given."
+        "METRICS (the ONLY numbers you may cite, verbatim):\n"
+        f"- RMSE = {m['rmse']:.2f} cycles\n"
+        f"- MAE = {m['mae']:.2f} cycles\n"
+        f"- R2 = {m['r2']:.3f}\n"
+        "</run>\n\n"
+        "<models_compared>\n"
+        f"{ranked}\n"
+        "</models_compared>\n"
+        f"{goal}\n"
+        "TASK: Write a 3-4 short-paragraph report for a non-expert. Cover which model "
+        "won, how accurate it is in practical terms (ground the 'on average off by' "
+        "statement in the MAE, and cite the RMSE as-is), what the R2 says about it, and "
+        "whether it meets the user's stated success definition. Every number you write "
+        "must be copied verbatim from the METRICS block - do not calculate anything."
     )
-    return provider.complete([{"role": "user", "content": prompt}])
+    return provider.complete(
+        [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
 
 
 def report_writer_node(state: AgentState, config) -> dict:

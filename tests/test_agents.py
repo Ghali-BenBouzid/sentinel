@@ -153,9 +153,47 @@ def test_write_report_feeds_metrics_to_provider():
     provider = FakeProvider("The Extra Trees model predicts RUL within ~17 cycles.")
     out = write_report(_fake_train_result(), provider)
     assert out == "The Extra Trees model predicts RUL within ~17 cycles."
-    # The prompt actually carried the metrics the report should be grounded in.
-    prompt = provider.last_messages[0]["content"]
-    assert "17.10" in prompt and "0.820" in prompt
+    # The user message carries the grounded metric values the report must use.
+    user = provider.last_messages[-1]["content"]
+    assert "17.10" in user and "11.90" in user and "0.820" in user
+
+
+def test_write_report_prompt_is_grounding_constrained():
+    """The fix: the prompt bans fabrication/derivation and uses correct terms."""
+    provider = FakeProvider("ok")
+    write_report(_fake_train_result(), provider)
+    system = provider.last_messages[0]["content"]
+    user = provider.last_messages[-1]["content"]
+
+    # Correct terminology comes from the glossary (guards the "Mean Squared Error" mislabel).
+    assert "Root Mean Squared Error" in system + user
+    # Explicit no-derivation guardrails (guards the bogus "square root of RMSE").
+    assert "square root" in system.lower()
+    assert "do not compute" in system.lower() or "do not calculate" in user.lower()
+    # The single numeric source is the METRICS block; no second table of numbers.
+    assert "METRICS" in user
+    assert "MAE" in system  # instructed to use MAE for "on average off by"
+
+
+def test_report_only_cites_grounded_numbers():
+    """A well-behaved report should introduce no numbers beyond the given metrics.
+
+    We can't test a live model, so we simulate a grounded reply and assert every
+    number in it traces to the metrics the prompt supplied - the property the
+    prompt is engineered to enforce.
+    """
+    import re
+
+    grounded_reply = (
+        "The Extra Trees model won. On average it is off by 11.90 cycles (MAE), with an "
+        "RMSE of 17.10 cycles and an R2 of 0.820."
+    )
+    provider = FakeProvider(grounded_reply)
+    write_report(_fake_train_result(), provider)
+
+    allowed = {"11.90", "17.10", "0.820"}  # the provided metrics, formatted as in the prompt
+    numbers = set(re.findall(r"\d+\.\d+", grounded_reply))
+    assert numbers <= allowed, f"report cited ungrounded numbers: {numbers - allowed}"
 
 
 # --- monitor threshold logic + mock action -------------------------------

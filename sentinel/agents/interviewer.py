@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 
 from ..llm.provider import Provider
+from . import domain_context
 from .state import AgentState, InterviewConfig, append_log
 
 # The agenda. The code owns this list; the LLM never adds to or reorders it.
@@ -26,11 +27,18 @@ QUESTIONS: list[tuple[str, str]] = [
     ("success_metric", "What result would make this model a success to you?"),
 ]
 
+# The same domain glossary the report writer uses grounds the interviewer too, so
+# it normalizes a vague "success" answer into the right units/metric names
+# (e.g. "within 20 cycles" -> RMSE/MAE in cycles) rather than guessing.
 _EXTRACT_INSTRUCTIONS = (
     "You are configuring a predictive-maintenance training run from an "
-    "interview. Return ONLY a JSON object (no prose, no code fences) with keys: "
+    "interview. Use this domain glossary to interpret the answers in the correct "
+    "terms and units - do NOT invent metrics or numbers the user did not give:\n\n"
+    f"{domain_context.glossary()}\n\n"
+    "Return ONLY a JSON object (no prose, no code fences) with keys: "
     '"framing" (string), "failure_threshold" (integer cycles), '
-    '"reporting_cadence" (string), "success_metric" (string), '
+    '"reporting_cadence" (string), "success_metric" (string, phrased in the '
+    "glossary's metric names/units when the user implies one), "
     '"rul_cap" (integer, default 125), "window" (integer, default 5). '
     "Fill rul_cap and window from the answers only if mentioned, else use the "
     "defaults. Here are the interview questions and the user's answers:\n\n"
