@@ -22,10 +22,14 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   `provider_cheap`, `train_fn`, `ticket_dir`, and `notify` (optional, defaults to
   `print` - the interviewer announces applied defaults through it). This is what lets
   `tests/test_agents.py` run the whole graph offline with fakes - no live LLM, no PyCaret.
-- Interviewer robustness: `extract_fields` has the LLM flag per-field whether the user
-  really answered; `run_interview` re-asks a non-answer ONCE with guidance, then falls
-  back to a `DEFAULTS` value and SURFACES it via `notify` - never store junk or default
-  silently. Keep the re-ask capped at once (no loops).
+- Interviewer is a turn-by-turn chatbot, NOT a batch collector. `run_interview` walks
+  `QUESTIONS` and `_resolve_field` resolves ONE field at a time; `classify_turn` makes one
+  LLM call per user reply returning `{classification, reply, value}` where classification is
+  CLEAR / UNCLEAR (pushback + offer default same turn) / QUESTION (answer from glossary then
+  re-ask, not consumed, not counted) / WANTS_DEFAULT (use default). Code owns the field
+  order + the `MAX_NONANSWERS` bound (fall back to `DEFAULTS`, never loop); LLM owns the
+  language. Each bot message is one `ask()` call; a field's ack is prepended to the next
+  question (no end-of-run assumption dump). Keep it that way - don't reintroduce batching.
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
   Never import `anthropic`/`groq` outside that file.
 - **Domain knowledge lives in `sentinel/agents/domain_context.py`** (datasets/metrics

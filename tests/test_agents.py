@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from sentinel.agents.graph import build_graph, route
-from sentinel.agents.interviewer import extract_fields, run_interview
+from sentinel.agents.interviewer import MAX_NONANSWERS, _resolve_field, run_interview
 from sentinel.agents.monitor import decide, run_monitor
 from sentinel.agents.report_writer import write_report
 from sentinel.agents.state import InterviewConfig
@@ -52,18 +52,22 @@ class QueueProvider:
         return self.replies[i]
 
 
-def _fields_json(**overrides) -> str:
-    """Build a nested interviewer-extraction reply (all 4 answered by default)."""
-    base = {
-        "framing": {"answered": True, "value": "turbofan RUL"},
-        "failure_threshold": {"answered": True, "value": 25},
-        "reporting_cadence": {"answered": True, "value": "daily"},
-        "success_metric": {"answered": True, "value": "RMSE < 20"},
-        "rul_cap": {"answered": False, "value": None},
-        "window": {"answered": False, "value": None},
-    }
-    base.update(overrides)
-    return json.dumps(base)
+class RecordingAsk:
+    """A fake `ask` that returns queued user replies and records the bot prompts."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        i = min(len(self.prompts) - 1, len(self.replies) - 1)
+        return self.replies[i]
+
+
+def _turn(classification: str, reply: str, value=None) -> str:
+    """Build one per-turn interviewer decision as the LLM would return it."""
+    return json.dumps({"classification": classification, "reply": reply, "value": value})
 
 
 @pytest.fixture(autouse=True)
@@ -134,75 +138,93 @@ def test_route_rejects_unknown_event():
         route({"event": "surprise"})
 
 
-# --- interviewer extraction + robustness ---------------------------------
+# --- interviewer: turn-by-turn conversation ------------------------------
+
+_Q = "Below how many cycles of remaining life should we alert?"  # the threshold question
 
 
-def test_extract_fields_reports_values_and_answered_flags():
-    provider = FakeProvider(_fields_json(rul_cap={"answered": True, "value": 100}))
-    fields = extract_fields({}, provider)
-    assert fields["failure_threshold"] == {"answered": True, "value": 25}
-    assert fields["rul_cap"] == {"answered": True, "value": 100}
-    assert fields["window"]["answered"] is False
+def test_unclear_reply_gets_immediate_clarify_and_default_offer():
+    # The bot's very next message (same turn) must push back AND offer the default,
+    # not batch the reaction to the end.
+    ask = RecordingAsk(["you tell me", "50 cycles"])
+    clarify = "I need a number here - roughly how many cycles? Or I can use the default of 30 cycles - want that?"
+    provider = QueueProvider([_turn("UNCLEAR", clarify), _turn("CLEAR", "Got it - alerting below 50.", 50)])
+
+    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+
+    # The second bot message (right after the unclear reply) is the clarify+default offer.
+    assert ask.prompts[1] == clarify
+    assert "default of 30" in ask.prompts[1]
+    assert value == 50  # the later clear answer resolves the field
 
 
-def test_run_interview_all_answered_no_reask():
-    prompts: list[str] = []
-    notes: list[str] = []
-    ask = lambda q: (prompts.append(q), "a real answer")[1]  # noqa: E731
-    provider = QueueProvider([_fields_json()])
-
-    cfg = run_interview(ask, provider, notify=notes.append)
-
-    # One question each, no re-ask, one extraction call.
-    assert len(prompts) == 4
-    assert provider.calls == 1
-    assert cfg.failure_threshold == 25
-    assert cfg.framing == "turbofan RUL"
-    # None of the four answered fields were defaulted...
-    assert not any("threshold" in n or "framing" in n for n in notes)
-    # ...but the un-asked advanced knobs are surfaced as defaults, never silent.
-    assert any("RUL cap" in n for n in notes)
-    assert any("rolling-window" in n for n in notes)
-
-
-def test_run_interview_reasks_nonanswer_then_defaults_and_surfaces():
-    prompts: list[str] = []
-    notes: list[str] = []
-    ask = lambda q: (prompts.append(q), "I don't know")[1]  # noqa: E731
-    # Threshold flagged not-answered before AND after the re-ask -> default 30.
-    unanswered_threshold = {"answered": False, "value": None}
+def test_user_question_is_answered_from_glossary_then_reasked_not_consumed():
+    # Four questions in a row must each be answered and re-asked WITHOUT being
+    # counted as non-answers; only the final clear reply resolves the field.
+    explain = "RMSE is the model's typical error in cycles (lower is better). A common target is under 20. So - what would success look like?"
+    ask = RecordingAsk(["what does RMSE mean?"] * 4 + ["RMSE under 20 cycles"])
     provider = QueueProvider(
-        [
-            _fields_json(failure_threshold=unanswered_threshold),
-            _fields_json(failure_threshold=unanswered_threshold),
-        ]
+        [_turn("QUESTION", explain)] * 4 + [_turn("CLEAR", "Great - success is RMSE under 20.", "RMSE under 20 cycles")]
     )
 
-    cfg = run_interview(ask, provider, notify=notes.append)
+    value, ack = _resolve_field("success_metric", "What result would make this a success?", ask, provider, preamble="")
 
-    # The threshold question was re-asked exactly once (4 initial + 1 re-ask).
-    assert len(prompts) == 5
-    assert provider.calls == 2  # extract, then re-extract after the re-ask
-    assert any("clearer answer" in p and "how many cycles" in p for p in prompts)
-    # Default applied AND surfaced, not stored silently.
-    assert cfg.failure_threshold == 30
-    assert any("default of 30 cycles" in n for n in notes)
+    # The bot answered the question and re-asked in the same turn...
+    assert ask.prompts[1] == explain
+    # ...and did NOT consume the question as the answer, nor hit the non-answer bound
+    # (4 questions > MAX_NONANSWERS would have defaulted if they counted).
+    assert value == "RMSE under 20 cycles"
 
 
-def test_run_interview_defaults_everything_on_unparseable_extraction():
+def test_wants_default_uses_the_default_with_a_one_line_ack():
+    ask = RecordingAsk(["you decide"])
+    ack_msg = "No problem - I'll alert below 30 cycles, a common default."
+    provider = QueueProvider([_turn("WANTS_DEFAULT", ack_msg, None)])
+
+    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+
+    assert value == 30  # DEFAULTS["failure_threshold"]
+    assert ack == ack_msg
+    assert len(ask.prompts) == 1  # resolved in one turn, no extra pushback
+
+
+def test_field_loop_is_bounded_and_falls_back_to_default():
+    # Endless non-answers must terminate at the default, never loop forever.
+    ask = RecordingAsk(["nope"])  # every reply is a non-answer
+    provider = QueueProvider([_turn("UNCLEAR", "Still need a number - or the default of 30?")])
+
+    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+
+    assert value == 30
+    # Bounded: opening ask + (MAX_NONANSWERS - 1) clarify asks, then fall back.
+    assert len(ask.prompts) == MAX_NONANSWERS
+    assert "default of 30" in ack
+
+
+def test_run_interview_walks_all_fields_and_carries_acks_forward():
+    ask = RecordingAsk(["turbofan RUL", "30 cycles", "after every run", "RMSE under 20"])
+    provider = QueueProvider(
+        [
+            _turn("CLEAR", "Got it, turbofan RUL.", "turbofan RUL"),
+            _turn("CLEAR", "Okay, alerting below 30.", 30),
+            _turn("CLEAR", "Sure, a report each run.", "after every run"),
+            _turn("CLEAR", "Great, RMSE under 20 it is.", "RMSE under 20"),
+        ]
+    )
     notes: list[str] = []
-    ask = lambda q: "you decide"  # noqa: E731
-    provider = QueueProvider(["not json at all"])  # every field looks unanswered
 
     cfg = run_interview(ask, provider, notify=notes.append)
 
+    # One bot turn per field (no second batch pass).
+    assert len(ask.prompts) == 4
+    # Field 1's acknowledgement leads in to field 2's question (continuous chat).
+    assert ask.prompts[1].startswith("Got it, turbofan RUL.")
+    assert "Below how many cycles" in ask.prompts[1]
+    # Values collected + advanced knobs defaulted; last ack closes the chat.
+    assert cfg.framing == "turbofan RUL"
     assert cfg.failure_threshold == 30
-    assert cfg.rul_cap == 125
-    assert cfg.window == 5
-    # Every defaulted field is surfaced - nothing stored as junk silently.
-    assert any("threshold" in n for n in notes)
-    assert any("framing" in n.lower() for n in notes)
-    assert any("cadence" in n.lower() or "after every training run" in n for n in notes)
+    assert cfg.rul_cap == 125 and cfg.window == 5
+    assert notes == ["Great, RMSE under 20 it is."]
 
 
 # --- report writer --------------------------------------------------------
@@ -317,11 +339,18 @@ def test_graph_runs_interview_to_monitor(tmp_path):
     test_eval = pd.DataFrame({"unit": [1, 2], "RUL": [10, 90]})
     run = TrainingRun(result=result, test_eval=test_eval, predict=lambda f: list(f["RUL"]))
 
-    interview_json = _fields_json(failure_threshold={"answered": True, "value": 30})
-
+    # The interviewer now converses per field; feed one CLEAR decision per field.
+    interview_turns = QueueProvider(
+        [
+            _turn("CLEAR", "ok", "turbofan RUL"),
+            _turn("CLEAR", "ok", 30),
+            _turn("CLEAR", "ok", "each run"),
+            _turn("CLEAR", "ok", "RMSE < 20"),
+        ]
+    )
     configurable = {
         "ask": lambda q: "scripted",
-        "provider_smart": FakeProvider(interview_json),
+        "provider_smart": interview_turns,
         "provider_cheap": FakeProvider("Report: the model is good."),
         "train_fn": lambda cfg: run,
         "ticket_dir": str(tmp_path),
@@ -342,9 +371,10 @@ def test_graph_reports_training_failure():
     def boom(cfg):
         raise RuntimeError("PyCaret exploded")
 
+    interview_turns = QueueProvider([_turn("CLEAR", "ok", 30)])  # resolves every field
     configurable = {
         "ask": lambda q: "x",
-        "provider_smart": FakeProvider(_fields_json()),
+        "provider_smart": interview_turns,
         "provider_cheap": FakeProvider("unused"),
         "train_fn": boom,
         "ticket_dir": "artifacts/tickets",

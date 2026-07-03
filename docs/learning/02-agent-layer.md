@@ -97,7 +97,7 @@ significant events the design says wake the orchestrator. Giving training a node
 lets the orchestrator dispatch it and then react to its outcome event, in the same
 vocabulary as everything else.
 
-### The interviewer pattern: code owns the agenda, LLM extracts
+### The interviewer pattern: code owns the agenda, LLM owns the conversation
 
 This is the pattern to copy elsewhere. In `interviewer.py`:
 
@@ -105,19 +105,41 @@ This is the pattern to copy elsewhere. In `interviewer.py`:
 QUESTIONS = [("framing", "..."), ("failure_threshold", "..."), ...]
 ```
 
-The *code* owns that checklist - the LLM never decides what to ask or in what
-order. The human answers in free text; an LLM call (`extract_fields`) turns all
-the answers into structured values *and* flags, per field, whether the user
-really answered. `run_interview` then does the conversational part a good
-interviewer would: any field flagged not-answered (empty, "I don't know", "you
-decide", off-topic) is re-asked **once** with a concrete example and the default;
-anything still unanswered falls back to the explained default via `DEFAULTS`, and
-every default actually applied is **surfaced** through the injected `notify`
-callable - nothing is stored as junk or defaulted silently. The LLM does the
-fuzzy parts (free text -> structure, and "was this really an answer?"); the code
-owns the agenda, the re-ask-once policy, and the defaults. That split is why it's
-testable offline with a fake provider returning fixed JSON and a fake `notify`
-that just records the surfaced lines.
+The *code* owns that ordered checklist - the LLM never decides what to ask or in
+what order. But a human-facing node should *feel* like a chat, not a form, so the
+interviewer is a **turn-by-turn loop that resolves one field before moving to the
+next** (`_resolve_field`). It started life as a batch collector - ask all four,
+then re-ask the unclear ones, then dump the assumptions at the end - and that read
+as a machine "cycling back", not a conversation. Worse, when a user asked "what
+does RMSE mean?" the batch version just re-asked instead of *answering*.
+
+The fix is one LLM call **per user reply**. `classify_turn` hands the LLM the
+active field, its default, the recent exchange, and the latest reply, and gets
+back `{classification, reply, value}` - one of four moves:
+
+- **CLEAR** -> extract the value, acknowledge, advance to the next field.
+- **UNCLEAR** -> the `reply` immediately pushes back *and* offers the default in
+  the same breath ("...or I can use the default of 30 cycles - want that?").
+- **QUESTION** -> the `reply` answers from the glossary and re-asks the field in
+  one message; it is **not** consumed as an answer and does **not** count against
+  the retry bound.
+- **WANTS_DEFAULT** ("you decide") -> use the default, say what was chosen and why.
+
+The **code** owns which field is active, the loop, and the bound (after
+`MAX_NONANSWERS` genuine non-answers it falls back to the default and moves on, so
+it can never loop forever). The **LLM** owns the language and the per-turn
+decision. Two details make it read as one continuous chat: every bot message is a
+single `ask(prompt) -> str` call (the return is the user's reply), and a field's
+closing acknowledgement is *prepended* to the next field's question rather than
+printed separately - so you never see an end-of-run dump.
+
+That clean split - agenda in code, language in the model - is why it's testable
+offline: a fake `ask` feeds scripted user replies and a fake provider returns
+scripted per-turn decisions, so a whole conversation (unclear -> pushback,
+question -> answer -> re-ask, defer -> default, bound -> fallback) runs with no
+live LLM. Why a turn-by-turn agent and not a form? Because the only node that
+talks to a person has to do what a person expects: react to what you just said,
+answer when you're confused, and never trap you in a field you don't understand.
 
 ### The report writer: a worked example of a grounded, no-fabrication prompt
 

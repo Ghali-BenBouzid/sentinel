@@ -21,8 +21,9 @@ from ..llm.provider import get_provider
 from .graph import build_graph
 from .training import run_training
 
-# Canned answers so the demo runs unattended (and CI-safe) by default. The LLM
-# still extracts structure from these - only the human typing is skipped.
+# Canned answers so the demo runs unattended (and CI-safe) by default. Each is a
+# clear, on-topic reply that resolves its field in one conversational turn - the
+# interviewer classifies and extracts them exactly as it would a live user's.
 SCRIPTED_ANSWERS = [
     "Remaining useful life of NASA C-MAPSS turbofan engines, so we can plan maintenance.",
     "Alert when an engine has 30 cycles of life left.",
