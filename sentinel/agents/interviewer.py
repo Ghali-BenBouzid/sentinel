@@ -1,33 +1,37 @@
 """Interviewer sub-agent - the only human-facing node, a turn-by-turn chatbot.
 
 Pattern: **the code owns the agenda, the LLM owns the language.** The code walks
-an ordered checklist (`QUESTIONS`) and resolves ONE field at a time; for each
-user reply the LLM classifies it in context (grounded in the domain glossary) and
-writes the exact thing to say next. There is no batch pass and no end-of-run dump
-of assumptions - every bot turn is an immediate reply to what the user just said.
+an ordered checklist (`QUESTIONS`) and resolves ONE field at a time; for each user
+reply the LLM classifies it in context (grounded in the domain glossary) and
+writes what to say next. There is no batch pass and no end-of-run dump - every bot
+turn is an immediate reply to what the user just said.
 
-Per turn the LLM returns one of four moves for the active field:
-- CLEAR: the reply answers it -> extract the value, acknowledge, next field.
-- UNCLEAR: evasive/empty/off-topic -> ask again AND offer the default in the same
-  breath; stay on the field. Counts toward the retry bound.
-- QUESTION: the user wants an explanation -> answer it from the glossary, then
-  re-ask; do NOT consume it as an answer, and do NOT count it.
-- WANTS_DEFAULT: the user defers ("you decide") -> use the default, say what was
-  chosen and why, next field.
+Two behaviours are modelled on Cognireply's persona interviewer:
 
-After `MAX_NONANSWERS` genuine non-answers on one field the code falls back to the
-default (with a one-line heads-up) and moves on, so it can never loop forever.
+- **"Use all defaults?" fast path.** The very first turn offers a one-shot escape
+  ("want me to just use sensible defaults so we can skip the interview?"). If the
+  user accepts, every field takes its default, the config is printed, and the
+  interview ends. The same instruction is honoured MID-interview: at any point,
+  "use the default for everything / the rest" short-circuits the remaining
+  questions (a global instruction must not get half-honoured).
+- **Deduction (infer-and-confirm).** After each answer the LLM proposes, with a
+  confidence score, values for still-open fields the conversation already implies.
+  When the agenda reaches a field that has a confident deduced value, the bot
+  CONFIRMS it ("Earlier you mentioned X - set the threshold to 30?") instead of
+  asking cold, and the user accepts or corrects in one turn. Deductions are
+  confidence-gated (`DEDUCE_CONFIDENCE`) and grounded - a guess just asks normally.
 
 Each bot message is one `ask(prompt) -> str` call (return = the user's reply), so
-the node runs interactively for the captain, unattended with scripted replies in
-the demo, and offline in tests with a fake `ask`. `provider_smart` drives the
-conversation; a final closing line, if any, goes through the injected `notify`.
+the node runs interactively, unattended with scripted replies in the demo, and
+offline in tests with a fake `ask`. `provider_smart` drives the conversation; a
+final closing line, if any, goes through the injected `notify`.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 from ..llm.provider import Provider
 from . import domain_context
@@ -40,11 +44,12 @@ QUESTIONS: list[tuple[str, str]] = [
     ("reporting_cadence", "How often do you want status reports?"),
     ("success_metric", "What result would make this model a success to you?"),
 ]
+_ASKED_FIELDS = [f for f, _ in QUESTIONS]
 
 # Advanced knobs never put to the user; they always take their default here.
 _EXTRA_DEFAULTS = {"rul_cap": 125, "window": 5}
 
-# Sensible per-field defaults (offered mid-conversation and used on fallback).
+# Sensible per-field defaults (offered mid-conversation and used on fallback/skip).
 DEFAULTS: dict[str, object] = {
     "framing": "NASA C-MAPSS turbofan Remaining Useful Life (RUL) prediction",
     "failure_threshold": 30,
@@ -55,12 +60,58 @@ DEFAULTS: dict[str, object] = {
 
 # After this many genuine non-answers on ONE field, fall back to its default.
 MAX_NONANSWERS = 3
+# A deduced value is confirmed (not asked cold) only at/above this confidence.
+DEDUCE_CONFIDENCE = 0.6
 
-CLEAR, UNCLEAR, QUESTION, WANTS_DEFAULT = "CLEAR", "UNCLEAR", "QUESTION", "WANTS_DEFAULT"
+CLEAR, UNCLEAR, QUESTION, WANTS_DEFAULT, ALL_DEFAULTS = (
+    "CLEAR",
+    "UNCLEAR",
+    "QUESTION",
+    "WANTS_DEFAULT",
+    "ALL_DEFAULTS",
+)
 
-# System prompt (TIDD-EC): role + the four moves + Do/Don't + glossary + JSON
-# output, with a couple of worked examples to lock the format. The glossary is the
-# single source of domain facts so explanations and defaults stay correct.
+# The up-front one-shot escape. Offered as the interviewer's first message.
+GATE_QUESTION = (
+    "Want me to just use sensible defaults for everything so we can skip the interview? "
+    "(great for a quick demo.) Or we can go through it together to tune it - your call."
+)
+
+# Short human-facing announcement of a default that gets applied.
+_DEFAULT_LINE: dict[str, str] = {
+    "framing": f"Problem framing: {DEFAULTS['framing']} (default)",
+    "failure_threshold": f"Alert threshold: {DEFAULTS['failure_threshold']} cycles (default)",
+    "reporting_cadence": f"Reporting: {DEFAULTS['reporting_cadence']} (default)",
+    "success_metric": f"Success target: {DEFAULTS['success_metric']} (default)",
+}
+
+# How the bot confirms a deduced value instead of asking cold (grounded, per field).
+_CONFIRM: dict[str, str] = {
+    "framing": "From what you said, I'll frame this as {v}. Sound right, or would you put it differently?",
+    "failure_threshold": (
+        "Earlier it sounded like alerting around {v} cycles - shall I set the threshold to {v}? "
+        "(or give me a different number.)"
+    ),
+    "reporting_cadence": "You hinted at reporting {v} - shall I go with that?",
+    "success_metric": "For success you mentioned {v} - shall I use that as the target?",
+}
+
+_gloss = domain_context.glossary()
+
+# Gate classifier: does the user want the all-defaults shortcut? Kept tiny and
+# conservative - only a clear acceptance skips the interview.
+_GATE_SYSTEM_PROMPT = (
+    "The user was just asked whether to SKIP a short setup interview and use sensible "
+    "defaults for everything (a quick-demo shortcut), or go through the interview. "
+    "Decide if their reply CLEARLY opts into the all-defaults shortcut. True only for a "
+    'clear acceptance ("yes", "use defaults", "just use defaults", "skip it", "defaults '
+    'are fine", "quick demo please"). Anything else - "no", "let\'s go through it", a '
+    "question, or an actual answer to a setup question - is false.\n"
+    'Return ONLY JSON: {"all_defaults": true|false}'
+)
+
+# Per-turn classifier (TIDD-EC): role + the five moves + Do/Don't + glossary + JSON
+# output + worked examples. The glossary is the single source of domain facts.
 _SYSTEM_PROMPT = (
     "You are Sentinel's setup assistant: a friendly, concise predictive-maintenance "
     "expert running a short spoken-style interview to configure a model-training run. "
@@ -68,71 +119,99 @@ _SYSTEM_PROMPT = (
     "said. Never move on until the active field is resolved.\n\n"
     "Use ONLY this glossary as your source of domain facts - do not invent metrics, "
     "numbers, or options that are not in it:\n\n"
-    f"{domain_context.glossary()}\n\n"
-    "Each turn you are given the ACTIVE field, its question, its DEFAULT, and the "
-    "user's latest reply (with the recent exchange). Classify the reply and write your "
-    "spoken response:\n"
-    "- CLEAR: the reply genuinely answers THIS field. Extract the value and acknowledge "
-    "in one short sentence.\n"
-    "- UNCLEAR: empty, evasive, or off-topic (\"you tell me\", \"I don't know\", or "
-    '"never" where it makes no sense). Immediately ask for a clearer answer AND offer '
-    "the default in the same breath (e.g. \"...or I can use the default of 30 cycles - "
-    'want that?").\n'
-    "- QUESTION: the user is asking you something or wants an explanation before "
-    "deciding (\"what does RMSE mean?\", \"explain so I can choose\", \"what are my "
-    "options?\"). Answer it in plain language from the glossary, mention the default, "
-    "THEN re-ask this field's question in the same reply. Do NOT treat this as an answer.\n"
-    "- WANTS_DEFAULT: the user defers to you (\"you decide\", \"choose for me\", \"use "
-    "the default\", \"whatever you think\"). Use the default and tell them what you "
-    "chose and why in one line.\n\n"
-    "DO: ground every explanation and number in the glossary/default; keep replies to "
-    "1-3 warm, direct sentences; give failure_threshold as an integer number of cycles; "
-    "phrase a success_metric in the glossary's metric names/units when the user implies "
-    "one.\n"
-    "DO NOT: move on while the field is unresolved; treat a user's question as their "
-    "answer; invent facts not in the glossary.\n\n"
+    f"{_gloss}\n\n"
+    "Each turn you are given the ACTIVE field, its question, its DEFAULT, the recent "
+    "conversation, and (sometimes) a deduced value already shown for confirmation. "
+    "Classify the user's latest reply and write your spoken response:\n"
+    "- CLEAR: the reply genuinely answers THIS field (or, if a deduced value was shown, "
+    "the user accepts it - then echo that value). Extract the value; acknowledge in one "
+    "short sentence.\n"
+    "- UNCLEAR: empty, evasive, or off-topic. Immediately ask for a clearer answer AND "
+    "offer the default in the same breath (e.g. \"...or I can use the default of 30 "
+    'cycles - want that?").\n'
+    "- QUESTION: the user asks you something or wants an explanation before deciding. "
+    "Answer it in plain language from the glossary, mention the default, THEN re-ask this "
+    "field's question in the same reply. Do NOT treat this as an answer.\n"
+    "- WANTS_DEFAULT: the user defers on THIS field only (\"you decide\", \"skip it\", "
+    '"use the default"). Use the default and say what you chose in one line.\n'
+    "- ALL_DEFAULTS: the user asks to use defaults for EVERYTHING / the rest / all future "
+    "questions (\"just use defaults for everything\", \"defaults for the rest\", \"stop "
+    'asking, use defaults"). Acknowledge that you\'ll fill everything else with defaults.\n\n'
+    "Also, in `deduced`, propose values for any OTHER still-open interview fields "
+    f"({', '.join(_ASKED_FIELDS)}) that the user's words already imply, each with a "
+    "confidence 0-1. Only include a field the conversation genuinely supports; a mere "
+    "guess stays below 0.6. NEVER include the active field in `deduced`, and never invent "
+    "a value the conversation does not support.\n\n"
+    "DO: ground every explanation and number in the glossary/default; keep replies to 1-3 "
+    "warm, direct sentences; give failure_threshold as an integer number of cycles; phrase "
+    "a success_metric in the glossary's metric names/units when implied.\n"
+    "DO NOT: move on while the field is unresolved; treat a question as an answer; invent "
+    "facts, numbers, or deductions the conversation does not support.\n\n"
     "Return ONLY a JSON object (no prose, no code fences):\n"
-    '{"classification": "CLEAR|UNCLEAR|QUESTION|WANTS_DEFAULT", '
-    '"reply": "the exact message to say to the user now", '
-    '"value": <the extracted value if CLEAR, else null>}\n\n'
+    '{"classification": "CLEAR|UNCLEAR|QUESTION|WANTS_DEFAULT|ALL_DEFAULTS", '
+    '"reply": "the exact message to say now", '
+    '"value": <the extracted value for the ACTIVE field if CLEAR, else null>, '
+    '"deduced": [{"field": "<other field>", "value": <v>, "confidence": <0-1>}]}\n\n'
     "Examples:\n"
-    'Field failure_threshold, user says "50 cycles" -> '
-    '{"classification": "CLEAR", "reply": "Got it - I\'ll alert below 50 cycles.", "value": 50}\n'
-    'Field failure_threshold, user says "you tell me" -> '
-    '{"classification": "UNCLEAR", "reply": "I need a number here - roughly how many '
-    'cycles of life left should trigger an alert? Or I can use the default of 30 cycles - '
-    'want that?", "value": null}\n'
-    'Field success_metric, user says "what does RMSE mean?" -> '
-    '{"classification": "QUESTION", "reply": "RMSE is the model\'s typical error in '
-    "cycles - lower is better, and it's an accuracy measure, not a prediction of "
-    'remaining life. A common target is held-out RMSE under 20 cycles. So - what result '
-    'would make this a success for you?", "value": null}\n'
-    'Field reporting_cadence, user says "you decide" -> '
-    '{"classification": "WANTS_DEFAULT", "reply": "No problem - I\'ll send a report after '
-    'every training run, which is the usual default.", "value": null}'
+    'Active failure_threshold, user "50 cycles" -> '
+    '{"classification": "CLEAR", "reply": "Got it - I\'ll alert below 50 cycles.", "value": 50, "deduced": []}\n'
+    'Active failure_threshold, deduced value shown was 25, user "yeah that works" -> '
+    '{"classification": "CLEAR", "reply": "Great, alerting below 25 cycles.", "value": 25, "deduced": []}\n'
+    'Active framing, user "predict turbofan RUL; alert me around 25 cycles and I want RMSE under 20" -> '
+    '{"classification": "CLEAR", "reply": "Got it - turbofan RUL prediction.", '
+    '"value": "turbofan Remaining Useful Life prediction", '
+    '"deduced": [{"field": "failure_threshold", "value": 25, "confidence": 0.9}, '
+    '{"field": "success_metric", "value": "held-out RMSE under 20 cycles", "confidence": 0.85}]}\n'
+    'Active success_metric, user "what does RMSE mean?" -> '
+    '{"classification": "QUESTION", "reply": "RMSE is the model\'s typical error in cycles - '
+    "lower is better, and it's an accuracy measure, not a prediction of remaining life. A "
+    'common target is held-out RMSE under 20 cycles. So - what would success look like for '
+    'you?", "value": null, "deduced": []}\n'
+    'Active reporting_cadence, user "just use defaults for everything from here" -> '
+    '{"classification": "ALL_DEFAULTS", "reply": "Sounds good - I\'ll fill everything else '
+    'with sensible defaults.", "value": null, "deduced": []}'
 )
 
 
 @dataclass
 class Turn:
-    """One LLM per-turn decision: how to classify the reply and what to say next."""
+    """One LLM per-turn decision: classification, next message, value, deductions."""
 
     classification: str
     reply: str
     value: object
+    deduced: list[dict] = dataclass_field(default_factory=list)
 
 
-def classify_turn(field: str, question: str, transcript: list[str], reply: str, provider: Provider) -> Turn:
+@dataclass
+class FieldOutcome:
+    """Result of resolving one field: its value + the ack, or a global short-circuit."""
+
+    value: object = None
+    ack: str = ""
+    short_circuit: bool = False
+
+
+def classify_gate(reply: str, provider: Provider) -> bool:
+    """Return True only if the user clearly wants the all-defaults shortcut."""
+    raw = provider.complete(
+        [{"role": "system", "content": _GATE_SYSTEM_PROMPT}, {"role": "user", "content": reply}]
+    )
+    return bool(_parse_json_object(raw).get("all_defaults"))
+
+
+def classify_turn(field: str, question: str, history: list[str], reply: str, deduced_value, provider: Provider) -> Turn:
     """Classify the user's `reply` to the active `field` and produce the next message.
 
-    Pure apart from the provider call, so it is testable with a fake provider. A
-    malformed reply degrades to UNCLEAR (ask again) rather than crashing the loop.
+    `deduced_value` is a value already shown for confirmation (or None). Pure apart
+    from the provider call; a malformed reply degrades to UNCLEAR rather than crashing.
     """
+    ded_line = f"\n<deduced_value_shown>{deduced_value}</deduced_value_shown>" if deduced_value is not None else ""
     user_msg = (
         f"<active_field>{field}</active_field>\n"
         f"<question>{question}</question>\n"
-        f"<default>{DEFAULTS[field]}</default>\n"
-        f"<recent_exchange>\n{chr(10).join(transcript)}\n</recent_exchange>\n"
+        f"<default>{DEFAULTS[field]}</default>{ded_line}\n"
+        f"<recent_conversation>\n{chr(10).join(history)}\n</recent_conversation>\n"
         f"<latest_user_reply>{reply}</latest_user_reply>"
     )
     raw = provider.complete(
@@ -140,64 +219,113 @@ def classify_turn(field: str, question: str, transcript: list[str], reply: str, 
     )
     data = _parse_json_object(raw)
     classification = data.get("classification")
-    if classification not in (CLEAR, UNCLEAR, QUESTION, WANTS_DEFAULT):
+    if classification not in (CLEAR, UNCLEAR, QUESTION, WANTS_DEFAULT, ALL_DEFAULTS):
         classification = UNCLEAR
-    return Turn(classification=classification, reply=str(data.get("reply") or ""), value=data.get("value"))
+    deduced = data.get("deduced") if isinstance(data.get("deduced"), list) else []
+    return Turn(classification, str(data.get("reply") or ""), data.get("value"), deduced)
 
 
-def _resolve_field(field: str, question: str, ask, provider: Provider, preamble: str) -> tuple[object, str]:
-    """Converse until `field` is resolved; return (value, closing_ack_for_next_turn).
+def _absorb_deductions(deduced: dict, proposals: list[dict], active: str, resolved: set[str]) -> None:
+    """Store confident deductions for still-open fields (Cognireply's `_deduce` gate)."""
+    for p in proposals:
+        if not isinstance(p, dict):
+            continue
+        key = p.get("field")
+        if key not in _ASKED_FIELDS or key == active or key in resolved:
+            continue
+        try:
+            conf = float(p.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        value = _coerce(key, p.get("value")) if key == "failure_threshold" else p.get("value")
+        if conf >= DEDUCE_CONFIDENCE and value not in (None, ""):
+            deduced[key] = value  # latest confident deduction wins
 
-    `preamble` (an acknowledgement carried from the previous field) is prepended to
-    this field's opening question so the flow reads as one continuous chat.
-    """
+
+def _resolve_field(field, question, ask, provider, history, preamble, deduced, resolved) -> FieldOutcome:
+    """Converse until `field` is resolved; return its value + closing ack (or a
+    short-circuit if the user asks for all-defaults). Confirms a deduced value
+    instead of asking cold, and absorbs new deductions for later fields."""
     default = DEFAULTS[field]
-    transcript: list[str] = []
-    opening = f"{preamble}\n\n{question}".strip() if preamble else question
+    ded_value = deduced.get(field)
+
+    if ded_value is not None:
+        opening_body = _CONFIRM[field].format(v=ded_value)
+    else:
+        opening_body = question
+    opening = f"{preamble}\n\n{opening_body}".strip() if preamble else opening_body
     reply = ask(opening)
-    transcript += [f"Assistant: {opening}", f"User: {reply}"]
+    history += [f"Assistant: {opening}", f"User: {reply}"]
 
     nonanswers = 0
     while True:
-        turn = classify_turn(field, question, transcript, reply, provider)
+        turn = classify_turn(field, question, history, reply, ded_value, provider)
+        _absorb_deductions(deduced, turn.deduced, active=field, resolved=resolved)
+
+        if turn.classification == ALL_DEFAULTS:
+            return FieldOutcome(short_circuit=True)
 
         if turn.classification == CLEAR:
             value = _coerce(field, turn.value)
+            if value is None and ded_value is not None:
+                value = _coerce(field, ded_value)  # bare "yes" on a confirmation
             if value is not None:
-                return value, turn.reply  # ack rides along to the next field's opening
-            turn.classification = UNCLEAR  # "clear" but unusable value -> treat as non-answer
+                return FieldOutcome(value=value, ack=turn.reply)
+            turn.classification = UNCLEAR  # "clear" but unusable -> treat as non-answer
 
         if turn.classification == WANTS_DEFAULT:
             ack = turn.reply or f"Okay, I'll go with the default: {default}."
-            return default, ack
+            return FieldOutcome(value=default, ack=ack)
 
         if turn.classification == QUESTION:
-            # Answer + re-ask in one message; a question is not a failed answer.
-            bot_msg = turn.reply or question
+            bot_msg = turn.reply or question  # answer + re-ask; not a failed answer
         else:  # UNCLEAR
             nonanswers += 1
             if nonanswers >= MAX_NONANSWERS:
-                return default, f"Let's not get stuck - I'll go with the default of {default} for now."
+                return FieldOutcome(value=default, ack=f"Let's not get stuck - I'll use the default of {default}.")
             bot_msg = turn.reply or f"I need a clearer answer. {question}"
 
         reply = ask(bot_msg)
-        transcript += [f"Assistant: {bot_msg}", f"User: {reply}"]
+        history += [f"Assistant: {bot_msg}", f"User: {reply}"]
 
 
 def run_interview(ask, provider: Provider, notify=print) -> InterviewConfig:
-    """Drive the whole interview as a turn-by-turn chat, one field fully at a time.
+    """Drive the interview: offer the all-defaults escape, then converse field by field.
 
     `ask(prompt) -> str` is the human channel (each call is one bot message);
-    `notify(str)` delivers a single closing line at the end, if any.
+    `notify(str)` reports applied defaults and the closing line.
     """
+    # Up-front fast path: offer to skip the whole interview with sensible defaults.
+    if classify_gate(ask(GATE_QUESTION), provider):
+        return _fill_defaults_and_finish({}, notify, opener="Great - using sensible defaults across the board:")
+
     values: dict[str, object] = {}
+    deduced: dict[str, object] = {}
+    history: list[str] = []
     preamble = ""
+    resolved: set[str] = set()
+
     for field, question in QUESTIONS:
-        value, ack = _resolve_field(field, question, ask, provider, preamble)
-        values[field] = value
-        preamble = ack  # becomes the lead-in to the next field's question
+        outcome = _resolve_field(field, question, ask, provider, history, preamble, deduced, resolved)
+        if outcome.short_circuit:
+            # Global "use defaults for everything" - fill this field + all the rest.
+            return _fill_defaults_and_finish(values, notify, opener="Okay - filling everything else with defaults:")
+        values[field] = outcome.value
+        resolved.add(field)
+        preamble = outcome.ack
+
     if preamble:
-        notify(preamble)  # close the conversation on the last field's acknowledgement
+        notify(preamble)  # close on the last field's acknowledgement
+    return InterviewConfig(**values, **_EXTRA_DEFAULTS)
+
+
+def _fill_defaults_and_finish(values: dict, notify, opener: str) -> InterviewConfig:
+    """Fill every not-yet-answered asked field with its default, announcing each."""
+    defaulted = [f for f in _ASKED_FIELDS if f not in values]
+    notify(opener)
+    for field in defaulted:
+        notify(f"  - {_DEFAULT_LINE[field]}")
+        values[field] = DEFAULTS[field]
     return InterviewConfig(**values, **_EXTRA_DEFAULTS)
 
 

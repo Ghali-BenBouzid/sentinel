@@ -114,8 +114,9 @@ as a machine "cycling back", not a conversation. Worse, when a user asked "what
 does RMSE mean?" the batch version just re-asked instead of *answering*.
 
 The fix is one LLM call **per user reply**. `classify_turn` hands the LLM the
-active field, its default, the recent exchange, and the latest reply, and gets
-back `{classification, reply, value}` - one of four moves:
+active field, its default, the recent conversation, and the latest reply, and gets
+back `{classification, reply, value, deduced}` - the classification is one of five
+moves:
 
 - **CLEAR** -> extract the value, acknowledge, advance to the next field.
 - **UNCLEAR** -> the `reply` immediately pushes back *and* offers the default in
@@ -123,7 +124,9 @@ back `{classification, reply, value}` - one of four moves:
 - **QUESTION** -> the `reply` answers from the glossary and re-asks the field in
   one message; it is **not** consumed as an answer and does **not** count against
   the retry bound.
-- **WANTS_DEFAULT** ("you decide") -> use the default, say what was chosen and why.
+- **WANTS_DEFAULT** ("you decide") -> use the default for *this* field, say what
+  was chosen and why.
+- **ALL_DEFAULTS** ("just use defaults for everything") -> short-circuit (below).
 
 The **code** owns which field is active, the loop, and the bound (after
 `MAX_NONANSWERS` genuine non-answers it falls back to the default and moves on, so
@@ -133,13 +136,44 @@ single `ask(prompt) -> str` call (the return is the user's reply), and a field's
 closing acknowledgement is *prepended* to the next field's question rather than
 printed separately - so you never see an end-of-run dump.
 
-That clean split - agenda in code, language in the model - is why it's testable
-offline: a fake `ask` feeds scripted user replies and a fake provider returns
-scripted per-turn decisions, so a whole conversation (unclear -> pushback,
-question -> answer -> re-ask, defer -> default, bound -> fallback) runs with no
-live LLM. Why a turn-by-turn agent and not a form? Because the only node that
-talks to a person has to do what a person expects: react to what you just said,
-answer when you're confused, and never trap you in a field you don't understand.
+### Two behaviours borrowed from Cognireply: the all-defaults escape and deduction
+
+**The all-defaults short-circuit.** A human-facing agent has to honour a *global*
+instruction the moment it hears one. The first thing the interviewer says offers a
+one-shot escape ("want me to just use sensible defaults so we can skip the
+interview?"); a small `classify_gate` call decides if the user opted in, and if so
+every field takes its default and the interview ends. The same intent is honoured
+*mid-interview*: any turn can come back `ALL_DEFAULTS`, and the loop immediately
+fills the current field **and all remaining fields** with their defaults, announces
+each one, and stops asking. This was a real bug - the previous version heard "use
+defaults for everything" and still asked the next question, half-honouring a global
+command. The lesson: a per-field state machine still needs a global short-circuit,
+and "apply to the rest" has to actually skip the rest, not one field.
+
+**Deduction (infer-and-confirm, not ask-cold).** If a user front-loads information
+("predict turbofan RUL, alert me around 25 cycles, and I want RMSE under 20"), it
+is rude to then ask them cold for the threshold they just gave. So every turn the
+LLM also returns `deduced`: proposed values for *other* still-open fields it can
+infer from the conversation, each with a confidence 0-1. `_absorb_deductions`
+keeps only the confident ones (>= `DEDUCE_CONFIDENCE`, mirroring Cognireply's
+gate) - a guess below the bar is dropped, so the field is still asked normally.
+When the agenda later reaches a field that already holds a confident deduced value,
+`_resolve_field` opens with a **confirmation** ("Earlier it sounded like alerting
+around 25 cycles - set the threshold to 25?") instead of the cold question, and a
+bare "yes" accepts it (the deduced value is passed into `classify_turn` so an
+affirmation resolves to `CLEAR`). Two rules keep it honest: deductions are
+grounded in the glossary and never invented, and low confidence means ask, don't
+assume.
+
+That clean split - agenda, loop, bound, and gating in code; language, per-turn
+classification, and deduction in the model - is why it's testable offline: a fake
+`ask` feeds scripted user replies and a fake provider returns scripted per-turn
+decisions, so a whole conversation (gate -> decline, unclear -> pushback, question
+-> answer -> re-ask, deduce -> confirm, defer -> default, "all defaults" ->
+short-circuit) runs with no live LLM. Why a turn-by-turn agent and not a form?
+Because the only node that talks to a person has to do what a person expects: react
+to what you just said, answer when you're confused, use what you already told it,
+and take "just use defaults" as a real instruction.
 
 ### The report writer: a worked example of a grounded, no-fabrication prompt
 

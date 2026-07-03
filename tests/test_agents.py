@@ -15,7 +15,13 @@ import pandas as pd
 import pytest
 
 from sentinel.agents.graph import build_graph, route
-from sentinel.agents.interviewer import MAX_NONANSWERS, _resolve_field, run_interview
+from sentinel.agents.interviewer import (
+    DEFAULTS,
+    GATE_QUESTION,
+    MAX_NONANSWERS,
+    _resolve_field,
+    run_interview,
+)
 from sentinel.agents.monitor import decide, run_monitor
 from sentinel.agents.report_writer import write_report
 from sentinel.agents.state import InterviewConfig
@@ -65,9 +71,16 @@ class RecordingAsk:
         return self.replies[i]
 
 
-def _turn(classification: str, reply: str, value=None) -> str:
+def _turn(classification: str, reply: str, value=None, deduced=None) -> str:
     """Build one per-turn interviewer decision as the LLM would return it."""
-    return json.dumps({"classification": classification, "reply": reply, "value": value})
+    return json.dumps(
+        {"classification": classification, "reply": reply, "value": value, "deduced": deduced or []}
+    )
+
+
+def _gate(all_defaults: bool) -> str:
+    """Build the up-front gate classifier's reply."""
+    return json.dumps({"all_defaults": all_defaults})
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +156,11 @@ def test_route_rejects_unknown_event():
 _Q = "Below how many cycles of remaining life should we alert?"  # the threshold question
 
 
+def _resolve(field, question, ask, provider, *, preamble="", deduced=None):
+    """Drive one field through the (post-gate) resolver with fresh conversation state."""
+    return _resolve_field(field, question, ask, provider, [], preamble, deduced or {}, set())
+
+
 def test_unclear_reply_gets_immediate_clarify_and_default_offer():
     # The bot's very next message (same turn) must push back AND offer the default,
     # not batch the reaction to the end.
@@ -150,12 +168,12 @@ def test_unclear_reply_gets_immediate_clarify_and_default_offer():
     clarify = "I need a number here - roughly how many cycles? Or I can use the default of 30 cycles - want that?"
     provider = QueueProvider([_turn("UNCLEAR", clarify), _turn("CLEAR", "Got it - alerting below 50.", 50)])
 
-    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+    outcome = _resolve("failure_threshold", _Q, ask, provider)
 
     # The second bot message (right after the unclear reply) is the clarify+default offer.
     assert ask.prompts[1] == clarify
     assert "default of 30" in ask.prompts[1]
-    assert value == 50  # the later clear answer resolves the field
+    assert outcome.value == 50  # the later clear answer resolves the field
 
 
 def test_user_question_is_answered_from_glossary_then_reasked_not_consumed():
@@ -167,24 +185,24 @@ def test_user_question_is_answered_from_glossary_then_reasked_not_consumed():
         [_turn("QUESTION", explain)] * 4 + [_turn("CLEAR", "Great - success is RMSE under 20.", "RMSE under 20 cycles")]
     )
 
-    value, ack = _resolve_field("success_metric", "What result would make this a success?", ask, provider, preamble="")
+    outcome = _resolve("success_metric", "What result would make this a success?", ask, provider)
 
     # The bot answered the question and re-asked in the same turn...
     assert ask.prompts[1] == explain
     # ...and did NOT consume the question as the answer, nor hit the non-answer bound
     # (4 questions > MAX_NONANSWERS would have defaulted if they counted).
-    assert value == "RMSE under 20 cycles"
+    assert outcome.value == "RMSE under 20 cycles"
 
 
-def test_wants_default_uses_the_default_with_a_one_line_ack():
+def test_skip_uses_the_default_with_a_one_line_ack():
     ask = RecordingAsk(["you decide"])
     ack_msg = "No problem - I'll alert below 30 cycles, a common default."
     provider = QueueProvider([_turn("WANTS_DEFAULT", ack_msg, None)])
 
-    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+    outcome = _resolve("failure_threshold", _Q, ask, provider)
 
-    assert value == 30  # DEFAULTS["failure_threshold"]
-    assert ack == ack_msg
+    assert outcome.value == 30  # DEFAULTS["failure_threshold"]
+    assert outcome.ack == ack_msg
     assert len(ask.prompts) == 1  # resolved in one turn, no extra pushback
 
 
@@ -193,18 +211,33 @@ def test_field_loop_is_bounded_and_falls_back_to_default():
     ask = RecordingAsk(["nope"])  # every reply is a non-answer
     provider = QueueProvider([_turn("UNCLEAR", "Still need a number - or the default of 30?")])
 
-    value, ack = _resolve_field("failure_threshold", _Q, ask, provider, preamble="")
+    outcome = _resolve("failure_threshold", _Q, ask, provider)
 
-    assert value == 30
+    assert outcome.value == 30
     # Bounded: opening ask + (MAX_NONANSWERS - 1) clarify asks, then fall back.
     assert len(ask.prompts) == MAX_NONANSWERS
-    assert "default of 30" in ack
+    assert "default of 30" in outcome.ack
 
 
-def test_run_interview_walks_all_fields_and_carries_acks_forward():
-    ask = RecordingAsk(["turbofan RUL", "30 cycles", "after every run", "RMSE under 20"])
+def test_deduced_field_is_confirmed_not_asked_cold():
+    # A value already deduced for this field is CONFIRMED, and a bare "yes" accepts it.
+    ask = RecordingAsk(["yep, that's right"])
+    provider = QueueProvider([_turn("CLEAR", "Great, alerting below 25.", None)])  # value null -> use deduced
+
+    outcome = _resolve("failure_threshold", _Q, ask, provider, deduced={"failure_threshold": 25})
+
+    # The opening message confirms the deduced value instead of asking cold.
+    assert "25" in ask.prompts[0]
+    assert ask.prompts[0] != _Q  # not the cold question
+    assert outcome.value == 25
+
+
+def test_run_interview_offers_gate_then_walks_fields_and_carries_acks():
+    # Gate declined -> normal conversation, one turn per field.
+    ask = RecordingAsk(["no, let's tune it", "turbofan RUL", "30 cycles", "after every run", "RMSE under 20"])
     provider = QueueProvider(
         [
+            _gate(False),  # up-front "use all defaults?" -> no
             _turn("CLEAR", "Got it, turbofan RUL.", "turbofan RUL"),
             _turn("CLEAR", "Okay, alerting below 30.", 30),
             _turn("CLEAR", "Sure, a report each run.", "after every run"),
@@ -215,16 +248,62 @@ def test_run_interview_walks_all_fields_and_carries_acks_forward():
 
     cfg = run_interview(ask, provider, notify=notes.append)
 
-    # One bot turn per field (no second batch pass).
-    assert len(ask.prompts) == 4
+    # First message is the all-defaults offer, then one turn per field (no batch pass).
+    assert ask.prompts[0] == GATE_QUESTION
+    assert len(ask.prompts) == 5
     # Field 1's acknowledgement leads in to field 2's question (continuous chat).
-    assert ask.prompts[1].startswith("Got it, turbofan RUL.")
-    assert "Below how many cycles" in ask.prompts[1]
-    # Values collected + advanced knobs defaulted; last ack closes the chat.
+    assert ask.prompts[2].startswith("Got it, turbofan RUL.")
+    assert "Below how many cycles" in ask.prompts[2]
     assert cfg.framing == "turbofan RUL"
     assert cfg.failure_threshold == 30
     assert cfg.rul_cap == 125 and cfg.window == 5
     assert notes == ["Great, RMSE under 20 it is."]
+
+
+def test_all_defaults_up_front_skips_the_whole_interview():
+    ask = RecordingAsk(["yes, just use defaults please"])
+    provider = QueueProvider([_gate(True)])
+    notes: list[str] = []
+
+    cfg = run_interview(ask, provider, notify=notes.append)
+
+    # Only the gate was asked; no field questions.
+    assert ask.prompts == [GATE_QUESTION]
+    assert provider.calls == 1
+    # Every field took its default...
+    assert cfg.framing == DEFAULTS["framing"]
+    assert cfg.failure_threshold == 30
+    assert cfg.reporting_cadence == DEFAULTS["reporting_cadence"]
+    assert cfg.rul_cap == 125 and cfg.window == 5
+    # ...and each default was announced (nothing silent).
+    assert any("Alert threshold: 30 cycles (default)" in n for n in notes)
+    assert any("Success target" in n for n in notes)
+
+
+def test_mid_interview_all_defaults_short_circuits_the_rest():
+    # The captain's bug: "use defaults for everything" mid-interview must stop asking.
+    ask = RecordingAsk(["no, let's do it", "turbofan RUL", "actually just use defaults for everything"])
+    provider = QueueProvider(
+        [
+            _gate(False),
+            _turn("CLEAR", "Got it, turbofan RUL.", "turbofan RUL"),
+            _turn("ALL_DEFAULTS", "Sure - I'll fill the rest with defaults.", None),
+        ]
+    )
+    notes: list[str] = []
+
+    cfg = run_interview(ask, provider, notify=notes.append)
+
+    # Stopped asking after the short-circuit: gate + framing + threshold only.
+    assert len(ask.prompts) == 3
+    # The answered field kept the user's value; the rest defaulted.
+    assert cfg.framing == "turbofan RUL"
+    assert cfg.failure_threshold == 30
+    assert cfg.reporting_cadence == DEFAULTS["reporting_cadence"]
+    assert cfg.success_metric == DEFAULTS["success_metric"]
+    # The remaining defaults were announced.
+    assert any("Alert threshold: 30 cycles (default)" in n for n in notes)
+    assert any("Reporting:" in n for n in notes)
 
 
 # --- report writer --------------------------------------------------------
@@ -339,9 +418,10 @@ def test_graph_runs_interview_to_monitor(tmp_path):
     test_eval = pd.DataFrame({"unit": [1, 2], "RUL": [10, 90]})
     run = TrainingRun(result=result, test_eval=test_eval, predict=lambda f: list(f["RUL"]))
 
-    # The interviewer now converses per field; feed one CLEAR decision per field.
+    # The interviewer offers the all-defaults gate, then converses per field.
     interview_turns = QueueProvider(
         [
+            _gate(False),  # decline the up-front shortcut, go through the interview
             _turn("CLEAR", "ok", "turbofan RUL"),
             _turn("CLEAR", "ok", 30),
             _turn("CLEAR", "ok", "each run"),
@@ -371,7 +451,8 @@ def test_graph_reports_training_failure():
     def boom(cfg):
         raise RuntimeError("PyCaret exploded")
 
-    interview_turns = QueueProvider([_turn("CLEAR", "ok", 30)])  # resolves every field
+    # Gate declined, then a CLEAR turn (repeats) resolves every field.
+    interview_turns = QueueProvider([_gate(False), _turn("CLEAR", "ok", 30)])
     configurable = {
         "ask": lambda q: "x",
         "provider_smart": interview_turns,

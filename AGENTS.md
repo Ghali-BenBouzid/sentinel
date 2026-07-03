@@ -24,12 +24,21 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   `tests/test_agents.py` run the whole graph offline with fakes - no live LLM, no PyCaret.
 - Interviewer is a turn-by-turn chatbot, NOT a batch collector. `run_interview` walks
   `QUESTIONS` and `_resolve_field` resolves ONE field at a time; `classify_turn` makes one
-  LLM call per user reply returning `{classification, reply, value}` where classification is
-  CLEAR / UNCLEAR (pushback + offer default same turn) / QUESTION (answer from glossary then
-  re-ask, not consumed, not counted) / WANTS_DEFAULT (use default). Code owns the field
-  order + the `MAX_NONANSWERS` bound (fall back to `DEFAULTS`, never loop); LLM owns the
-  language. Each bot message is one `ask()` call; a field's ack is prepended to the next
-  question (no end-of-run assumption dump). Keep it that way - don't reintroduce batching.
+  LLM call per user reply returning `{classification, reply, value, deduced}` where
+  classification is CLEAR / UNCLEAR (pushback + offer default same turn) / QUESTION (answer
+  from glossary then re-ask, not consumed, not counted) / WANTS_DEFAULT (default this field) /
+  ALL_DEFAULTS (short-circuit the rest). Code owns the field order + the `MAX_NONANSWERS`
+  bound (fall back to `DEFAULTS`, never loop); LLM owns the language. Each bot message is one
+  `ask()` call; a field's ack is prepended to the next question (no end-of-run dump). Don't
+  reintroduce batching.
+- All-defaults fast path: `run_interview` first offers the `GATE_QUESTION`; `classify_gate`
+  (a small yes/no LLM call) short-circuits the whole interview to defaults if the user opts
+  in. ALL_DEFAULTS mid-interview does the same for all remaining fields (fixes the bug where
+  a global "use defaults for everything" was half-honoured). Both announce each default.
+- Deduction (Cognireply-style, confidence-gated at `DEDUCE_CONFIDENCE`=0.6): each turn's
+  `deduced` proposals for still-open fields are absorbed (`_absorb_deductions`) only if
+  confident + grounded; when the agenda reaches a deduced field it CONFIRMS the value
+  (`_CONFIRM`) instead of asking cold. Low confidence -> ask normally. Never invent values.
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
   Never import `anthropic`/`groq` outside that file.
 - **Domain knowledge lives in `sentinel/agents/domain_context.py`** (datasets/metrics

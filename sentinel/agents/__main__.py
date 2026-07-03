@@ -21,10 +21,14 @@ from ..llm.provider import get_provider
 from .graph import build_graph
 from .training import run_training
 
-# Canned answers so the demo runs unattended (and CI-safe) by default. Each is a
-# clear, on-topic reply that resolves its field in one conversational turn - the
-# interviewer classifies and extracts them exactly as it would a live user's.
+# Canned answers so the demo runs unattended (and CI-safe) by default. The first
+# reply takes the interviewer's up-front "use all defaults?" fast path, so the
+# demo skips the interview and heads straight into training - the clearest thing
+# to show unattended. The remaining answers are the fallback in case a run instead
+# goes through the interview; each is a clear one-turn reply. Use --interactive to
+# go through the conversation (and try front-loading info to see deduction).
 SCRIPTED_ANSWERS = [
+    "Yes please - just use sensible defaults for everything, quick demo.",
     "Remaining useful life of NASA C-MAPSS turbofan engines, so we can plan maintenance.",
     "Alert when an engine has 30 cycles of life left.",
     "A report after every training run.",
