@@ -19,8 +19,13 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   report_writer, monitor.
 - **State holds data, dependencies come via `config["configurable"]`** (LangGraph
   `RunnableConfig`), not state. The injected deps are `ask`, `provider_smart`,
-  `provider_cheap`, `train_fn`, `ticket_dir`. This is what lets `tests/test_agents.py`
-  run the whole graph offline with fakes - no live LLM, no PyCaret.
+  `provider_cheap`, `train_fn`, `ticket_dir`, and `notify` (optional, defaults to
+  `print` - the interviewer announces applied defaults through it). This is what lets
+  `tests/test_agents.py` run the whole graph offline with fakes - no live LLM, no PyCaret.
+- Interviewer robustness: `extract_fields` has the LLM flag per-field whether the user
+  really answered; `run_interview` re-asks a non-answer ONCE with guidance, then falls
+  back to a `DEFAULTS` value and SURFACES it via `notify` - never store junk or default
+  silently. Keep the re-ask capped at once (no loops).
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
   Never import `anthropic`/`groq` outside that file.
 - **Domain knowledge lives in `sentinel/agents/domain_context.py`** (datasets/metrics

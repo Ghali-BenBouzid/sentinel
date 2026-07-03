@@ -27,6 +27,13 @@ def test_rmse_interpretation_forbids_transformation():
     assert "square root" in note
 
 
+def test_metric_interpretations_forbid_prediction_framing():
+    # Guards the "the model predicts it will fail in 17.09 cycles" bug: an error
+    # metric must never read as a remaining-life forecast.
+    for key in ("rmse", "mae", "r2"):
+        assert "not a prediction" in dc.METRICS[key].interpretation.lower()
+
+
 def test_dataset_explains_rul_and_cap_and_units():
     d = dc.DATASETS["fd001"]
     assert d.units == "cycles"

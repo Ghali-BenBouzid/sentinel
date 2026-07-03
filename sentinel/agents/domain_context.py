@@ -69,7 +69,9 @@ METRICS: dict[str, MetricInfo] = {
         interpretation=(
             "This IS the error magnitude, already in cycles - do not derive, transform, "
             "recompute, or take the square root of it (it is already a 'root' value). It weighs "
-            "large misses more heavily than MAE, so it is usually a bit larger than the MAE."
+            "large misses more heavily than MAE, so it is usually a bit larger than the MAE. It "
+            "is the model's typical ERROR, NOT a prediction of remaining life - never describe it "
+            "as how long an engine will last or when it will fail."
         ),
     ),
     "mae": MetricInfo(
@@ -79,7 +81,9 @@ METRICS: dict[str, MetricInfo] = {
         definition="the average absolute gap between predicted and actual RUL.",
         interpretation=(
             "This is the honest 'on average, off by about X cycles' number. When you want to say "
-            "how far off the model is on average, quote the MAE - do not invent a different value."
+            "how far off the model is on average, quote the MAE - do not invent a different value. "
+            "It measures average error, not a prediction of remaining life - never present it as a "
+            "time-to-failure or how long an engine will last."
         ),
     ),
     "r2": MetricInfo(
@@ -89,7 +93,8 @@ METRICS: dict[str, MetricInfo] = {
         definition="the share of the variation in RUL that the model explains.",
         interpretation=(
             "Closer to 1 is better (1.0 would be perfect); around 0 means no better than always "
-            "guessing the average. It is a proportion, not a count of cycles."
+            "guessing the average. It is a proportion, not a count of cycles, and not a prediction "
+            "of remaining life."
         ),
     ),
 }

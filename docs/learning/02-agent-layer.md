@@ -106,12 +106,18 @@ QUESTIONS = [("framing", "..."), ("failure_threshold", "..."), ...]
 ```
 
 The *code* owns that checklist - the LLM never decides what to ask or in what
-order. The human answers in free text; then **one** LLM call (`collect_config`)
-turns all the answers into a JSON object we parse into `InterviewConfig`. If the
-model returns garbage, `collect_config` falls back to safe defaults rather than
-crashing the graph. The LLM does the fuzzy part (free text -> structure) and
-nothing else. That's why it's testable with a fake provider that just returns a
-fixed JSON string.
+order. The human answers in free text; an LLM call (`extract_fields`) turns all
+the answers into structured values *and* flags, per field, whether the user
+really answered. `run_interview` then does the conversational part a good
+interviewer would: any field flagged not-answered (empty, "I don't know", "you
+decide", off-topic) is re-asked **once** with a concrete example and the default;
+anything still unanswered falls back to the explained default via `DEFAULTS`, and
+every default actually applied is **surfaced** through the injected `notify`
+callable - nothing is stored as junk or defaulted silently. The LLM does the
+fuzzy parts (free text -> structure, and "was this really an answer?"); the code
+owns the agenda, the re-ask-once policy, and the defaults. That split is why it's
+testable offline with a fake provider returning fixed JSON and a fake `notify`
+that just records the surfaced lines.
 
 ### The report writer: a worked example of a grounded, no-fabrication prompt
 

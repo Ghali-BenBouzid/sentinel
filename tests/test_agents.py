@@ -9,11 +9,13 @@ whole graph wires interview -> train -> report -> monitor and terminates.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
 from sentinel.agents.graph import build_graph, route
-from sentinel.agents.interviewer import collect_config
+from sentinel.agents.interviewer import extract_fields, run_interview
 from sentinel.agents.monitor import decide, run_monitor
 from sentinel.agents.report_writer import write_report
 from sentinel.agents.state import InterviewConfig
@@ -35,6 +37,33 @@ class FakeProvider:
     def complete(self, messages: list[dict], **kwargs) -> str:
         self.last_messages = messages
         return self.reply
+
+
+class QueueProvider:
+    """A `Provider` that returns queued replies in order (last one repeats)."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.calls = 0
+
+    def complete(self, messages: list[dict], **kwargs) -> str:
+        i = min(self.calls, len(self.replies) - 1)
+        self.calls += 1
+        return self.replies[i]
+
+
+def _fields_json(**overrides) -> str:
+    """Build a nested interviewer-extraction reply (all 4 answered by default)."""
+    base = {
+        "framing": {"answered": True, "value": "turbofan RUL"},
+        "failure_threshold": {"answered": True, "value": 25},
+        "reporting_cadence": {"answered": True, "value": "daily"},
+        "success_metric": {"answered": True, "value": "RMSE < 20"},
+        "rul_cap": {"answered": False, "value": None},
+        "window": {"answered": False, "value": None},
+    }
+    base.update(overrides)
+    return json.dumps(base)
 
 
 @pytest.fixture(autouse=True)
@@ -105,32 +134,75 @@ def test_route_rejects_unknown_event():
         route({"event": "surprise"})
 
 
-# --- interviewer extraction ----------------------------------------------
+# --- interviewer extraction + robustness ---------------------------------
 
 
-def test_collect_config_parses_llm_json():
-    provider = FakeProvider(
-        'Here you go: {"framing": "turbofan RUL", "failure_threshold": 25, '
-        '"reporting_cadence": "daily", "success_metric": "RMSE < 20", '
-        '"rul_cap": 100, "window": 7}'
-    )
-    cfg = collect_config({}, provider)
+def test_extract_fields_reports_values_and_answered_flags():
+    provider = FakeProvider(_fields_json(rul_cap={"answered": True, "value": 100}))
+    fields = extract_fields({}, provider)
+    assert fields["failure_threshold"] == {"answered": True, "value": 25}
+    assert fields["rul_cap"] == {"answered": True, "value": 100}
+    assert fields["window"]["answered"] is False
+
+
+def test_run_interview_all_answered_no_reask():
+    prompts: list[str] = []
+    notes: list[str] = []
+    ask = lambda q: (prompts.append(q), "a real answer")[1]  # noqa: E731
+    provider = QueueProvider([_fields_json()])
+
+    cfg = run_interview(ask, provider, notify=notes.append)
+
+    # One question each, no re-ask, one extraction call.
+    assert len(prompts) == 4
+    assert provider.calls == 1
     assert cfg.failure_threshold == 25
-    assert cfg.rul_cap == 100
-    assert cfg.window == 7
     assert cfg.framing == "turbofan RUL"
+    # None of the four answered fields were defaulted...
+    assert not any("threshold" in n or "framing" in n for n in notes)
+    # ...but the un-asked advanced knobs are surfaced as defaults, never silent.
+    assert any("RUL cap" in n for n in notes)
+    assert any("rolling-window" in n for n in notes)
 
 
-def test_collect_config_falls_back_on_bad_json():
-    cfg = collect_config(
-        {"framing": "raw answer", "failure_threshold": "ignored"},
-        FakeProvider("not json at all"),
+def test_run_interview_reasks_nonanswer_then_defaults_and_surfaces():
+    prompts: list[str] = []
+    notes: list[str] = []
+    ask = lambda q: (prompts.append(q), "I don't know")[1]  # noqa: E731
+    # Threshold flagged not-answered before AND after the re-ask -> default 30.
+    unanswered_threshold = {"answered": False, "value": None}
+    provider = QueueProvider(
+        [
+            _fields_json(failure_threshold=unanswered_threshold),
+            _fields_json(failure_threshold=unanswered_threshold),
+        ]
     )
-    # Defaults kick in; free-text framing falls back to the raw answer.
+
+    cfg = run_interview(ask, provider, notify=notes.append)
+
+    # The threshold question was re-asked exactly once (4 initial + 1 re-ask).
+    assert len(prompts) == 5
+    assert provider.calls == 2  # extract, then re-extract after the re-ask
+    assert any("clearer answer" in p and "how many cycles" in p for p in prompts)
+    # Default applied AND surfaced, not stored silently.
+    assert cfg.failure_threshold == 30
+    assert any("default of 30 cycles" in n for n in notes)
+
+
+def test_run_interview_defaults_everything_on_unparseable_extraction():
+    notes: list[str] = []
+    ask = lambda q: "you decide"  # noqa: E731
+    provider = QueueProvider(["not json at all"])  # every field looks unanswered
+
+    cfg = run_interview(ask, provider, notify=notes.append)
+
     assert cfg.failure_threshold == 30
     assert cfg.rul_cap == 125
     assert cfg.window == 5
-    assert cfg.framing == "raw answer"
+    # Every defaulted field is surfaced - nothing stored as junk silently.
+    assert any("threshold" in n for n in notes)
+    assert any("framing" in n.lower() for n in notes)
+    assert any("cadence" in n.lower() or "after every training run" in n for n in notes)
 
 
 # --- report writer --------------------------------------------------------
@@ -173,6 +245,20 @@ def test_write_report_prompt_is_grounding_constrained():
     # The single numeric source is the METRICS block; no second table of numbers.
     assert "METRICS" in user
     assert "MAE" in system  # instructed to use MAE for "on average off by"
+
+
+def test_write_report_prompt_forbids_metric_as_prediction():
+    """A metric must never be narrated as a remaining-life / time-to-failure forecast."""
+    provider = FakeProvider("ok")
+    write_report(_fake_train_result(), provider)
+    system = provider.last_messages[0]["content"]
+    glossary = provider.last_messages[-1]["content"]
+
+    # The system Do/Don't forbids equating a metric with a prediction...
+    assert "prediction of remaining life" in system.lower()
+    assert "fail" in system.lower()  # bans "predicts it will fail in N cycles"
+    # ...and the glossary reinforces it on the metric itself.
+    assert "not a prediction" in glossary.lower()
 
 
 def test_report_only_cites_grounded_numbers():
@@ -231,10 +317,7 @@ def test_graph_runs_interview_to_monitor(tmp_path):
     test_eval = pd.DataFrame({"unit": [1, 2], "RUL": [10, 90]})
     run = TrainingRun(result=result, test_eval=test_eval, predict=lambda f: list(f["RUL"]))
 
-    interview_json = (
-        '{"framing": "turbofan RUL", "failure_threshold": 30, '
-        '"reporting_cadence": "each run", "success_metric": "RMSE < 20"}'
-    )
+    interview_json = _fields_json(failure_threshold={"answered": True, "value": 30})
 
     configurable = {
         "ask": lambda q: "scripted",
@@ -261,7 +344,7 @@ def test_graph_reports_training_failure():
 
     configurable = {
         "ask": lambda q: "x",
-        "provider_smart": FakeProvider('{"failure_threshold": 30}'),
+        "provider_smart": FakeProvider(_fields_json()),
         "provider_cheap": FakeProvider("unused"),
         "train_fn": boom,
         "ticket_dir": "artifacts/tickets",
