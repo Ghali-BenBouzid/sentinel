@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# Raw datasets (fetched + cached at runtime, never committed)
+data/
+
+# Model artifacts + metrics produced by the pipeline
+artifacts/
+
+# PyCaret runtime log
+logs.log
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

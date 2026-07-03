@@ -1,0 +1,15 @@
+# Sentinel DS core - direct dependencies, pinned to the exact versions verified
+# to import and run together on Python 3.11 (see requirements.lock.txt for the
+# full transitive lock).
+#
+# PyCaret is version-sensitive: it pins an older scikit-learn and needs
+# Python ~3.9-3.11. This set was resolved and run end-to-end on Python 3.11.15.
+#
+# Setup:
+#   uv venv --python 3.11 .venv        # or: python3.11 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+
+pycaret==3.3.2
+scikit-learn==1.4.2
+pandas==2.1.4
+numpy==1.26.4
