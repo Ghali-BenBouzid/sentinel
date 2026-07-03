@@ -37,7 +37,7 @@ So for any earlier row, the true remaining life is simply
 That's the whole RUL label derivation in `data.add_rul`.
 An engine that failed at cycle 200, looked at on cycle 50, had 150 cycles left.
 
-### Why cap the RUL (the `RUL_CAP = 125` knob)
+### Why cap the RUL (the `DEFAULT_RUL_CAP = 125` knob)
 
 Raw RUL for a fresh engine can be 300+ cycles.
 But early in life, nothing has degraded yet - the sensors look identical to a
@@ -163,7 +163,7 @@ on top of it.
 
 Good rewrite exercises, in increasing difficulty:
 
-1. Change `RUL_CAP` to 100 and 150, rerun, and watch how RMSE/R2 move. Explain
+1. Change `DEFAULT_RUL_CAP` to 100 and 150, rerun, and watch how RMSE/R2 move. Explain
    why.
 2. Add a `<sensor>_min` / `<sensor>_max` (range) feature in `build_features`
    and see if the leaderboard improves.
