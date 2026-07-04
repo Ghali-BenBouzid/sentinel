@@ -383,6 +383,40 @@ def test_write_report_frames_metrics_as_held_out_test():
     assert "above or below" in system or "under the target" in system
 
 
+def test_success_verdict_decided_in_code():
+    """The met/not-met check is done in code (the weak model gets it wrong), and
+    only when the free-text target parses to a clear rule."""
+    from sentinel.agents.report_writer import _success_verdict
+
+    met = {"rmse": 17.09, "mae": 11.95, "r2": 0.818}
+    assert _success_verdict("held-out RMSE under 20 cycles", met) is True  # 17.09 <= 20
+    assert _success_verdict("RMSE under 15", met) is False  # 17.09 > 15
+    assert _success_verdict("MAE below 10 cycles", met) is False  # 11.95 > 10
+    assert _success_verdict("R2 above 0.9", met) is False  # 0.818 < 0.9
+    assert _success_verdict("R2 of at least 0.8", met) is True  # 0.818 >= 0.8
+    assert _success_verdict("RMSE around 20", met) is True  # no direction -> error metric upper bound
+    # Unparseable targets -> None (report then states values without a verdict).
+    assert _success_verdict("just make it accurate", met) is None
+    assert _success_verdict("", met) is None
+    assert _success_verdict(None, met) is None
+
+
+def test_write_report_passes_precomputed_verdict_not_a_comparison():
+    """write_report hands the LLM a decided verdict, so it never compares numbers."""
+    provider = FakeProvider("ok")
+    cfg = InterviewConfig(
+        framing="turbofan RUL",
+        failure_threshold=30,
+        reporting_cadence="each run",
+        success_metric="held-out RMSE under 20 cycles",
+    )
+    write_report(_fake_train_result(), provider, cfg)  # metrics rmse=17.1 -> meets
+    user = provider.last_messages[-1]["content"]
+    assert "SUCCESS CHECK" in user
+    assert "MEETS the user" in user  # 17.1 <= 20, decided in code
+    assert "do NOT re-compare" in user
+
+
 def test_report_only_cites_grounded_numbers():
     """A well-behaved report should introduce no numbers beyond the given metrics.
 
