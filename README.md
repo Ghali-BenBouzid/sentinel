@@ -128,6 +128,22 @@ prints the report and any monitor alerts, and writes mock maintenance tickets to
 `artifacts/tickets/`. Training reuses the M1 pipeline, so it downloads/caches
 FD001 and runs PyCaret exactly as `python -m sentinel.pipeline` does.
 
+### Run the demo dashboard
+
+A Streamlit dashboard runs the whole agent graph in the browser - chat through the
+interview, watch PyCaret train live, read the report, and step through the monitor's
+alerts and filed tickets. Streamlit is an optional extra (kept out of the core deps):
+
+```bash
+uv sync --extra dashboard
+uv run streamlit run sentinel/dashboard/app.py
+```
+
+It uses the same provider config as the CLI (`SENTINEL_LLM_PROVIDER` + your key from
+`.env`), runs the real graph end to end, and writes the same mock tickets to
+`artifacts/tickets/`. Training runs PyCaret live, so the training step takes a few
+minutes - the dashboard shows a live status while it compares model families.
+
 ## Tests, lint, and CI
 
 The unit tests in `tests/` are fast and fully offline. `test_core_helpers.py`
