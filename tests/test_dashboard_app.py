@@ -128,6 +128,11 @@ def test_run_self_advances_to_report_and_monitor():
     body = _body(at)
     assert "Report: model is good." in body, f"report not rendered:\n{body}"
     assert "tickets filed" in body, f"monitor summary not rendered:\n{body}"
+    # The leaderboard is labelled cross-validated and the headline held-out test,
+    # so the two different measurements are never shown unlabelled side by side.
+    low = body.lower()
+    assert "held-out test" in low, f"held-out test label missing:\n{body}"
+    assert "cross-validat" in low, f"cross-validation label missing:\n{body}"
 
 
 def test_refresh_reconnects_without_restarting():

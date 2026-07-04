@@ -362,6 +362,27 @@ def test_write_report_prompt_forbids_metric_as_prediction():
     assert "not a prediction" in glossary.lower()
 
 
+def test_write_report_frames_metrics_as_held_out_test():
+    """The metrics must be labelled as held-out test scores, with the leaderboard
+    flagged as cross-validated - so the report never reads as describing the model
+    with mystery/aggregate numbers."""
+    provider = FakeProvider("ok")
+    write_report(_fake_train_result(), provider)
+    system = provider.last_messages[0]["content"].lower()
+    user = provider.last_messages[-1]["content"].lower()
+
+    # The metric block is explicitly the held-out test set...
+    assert "held-out test" in user
+    # ...the leaderboard is explicitly cross-validated (not the same measurement)...
+    assert "cross-validation" in user or "cross validation" in user
+    # ...and the writer is told to say so and briefly why (never-seen-in-training).
+    assert "held-out test" in system
+    assert "never saw" in system or "never seen" in system
+    # And it must ban computing distance-to-target (the live model once wrote
+    # "2.91 cycles under the target", a fabricated subtraction).
+    assert "above or below" in system or "under the target" in system
+
+
 def test_report_only_cites_grounded_numbers():
     """A well-behaved report should introduce no numbers beyond the given metrics.
 

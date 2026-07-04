@@ -130,8 +130,17 @@ if final.get("event") == "failed_reported":
 # 2 · training results
 run = final["train_run"]
 st.subheader("2 · Training")
+st.caption(
+    "Model comparison - **cross-validated on the training data** (how the models are ranked and "
+    "the best one is selected). These are training-fold scores, so they read a little optimistic."
+)
 st.dataframe(run.result.leaderboard, width="stretch")
 m = run.result.metrics
+st.markdown(
+    "**Held-out test performance** - the selected model scored on unseen FD001 test engines. "
+    "This is the honest real-world estimate (usually a bit worse than the cross-validation numbers "
+    "above), and it is what the report describes."
+)
 c1, c2, c3 = st.columns(3)
 c1.metric("RMSE", f"{m['rmse']:.1f}")
 c2.metric("MAE", f"{m['mae']:.1f}")
