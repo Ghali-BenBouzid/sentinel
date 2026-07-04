@@ -17,6 +17,10 @@ dependencies = [
     "pydantic-settings>=2.14.2",
 ]
 
+[project.optional-dependencies]
+# The demo dashboard only - kept out of the core deps so `uv sync` and CI stay lean.
+dashboard = ["streamlit>=1.40"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
