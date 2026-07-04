@@ -11,6 +11,10 @@ dependencies = [
     "scikit-learn==1.4.2",
     "pandas==2.1.4",
     "numpy==1.26.4",
+    "langgraph>=1.2.7",
+    "anthropic>=0.116.0",
+    "groq>=1.5.0",
+    "pydantic-settings>=2.14.2",
 ]
 
 [build-system]
