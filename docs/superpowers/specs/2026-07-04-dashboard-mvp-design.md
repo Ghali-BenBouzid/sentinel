@@ -60,64 +60,82 @@ A plain, framework-agnostic class. Public API:
 - `saw(kind) -> bool` - convenience: whether an event of that kind has been emitted at any point
   (the runner remembers kinds it has emitted, so the UI polling loop can test `saw("training_finished")`
   without having to have caught that exact event in its own `poll()` call).
+- `history() -> list[Event]` - the full append-only transcript (prompts, answers, notifications,
+  training markers) the UI renders from.
 - `pending_prompt() -> str | None` - the interviewer question currently awaiting an answer.
-- `answer(text)` - hands the user's reply to the blocked `ask` (puts it on the in-queue).
+- `answer(text)` - clears the pending prompt synchronously, records the answer in the transcript,
+  then unblocks the worker's `ask`.
+- `training_elapsed() -> float | None` - seconds since training started (for the live timer).
 - `done -> bool` and `final_state() -> AgentState | None` - whether `invoke` returned, and the final
   state (report, alerts, log).
 - `error -> Exception | None` - any unexpected exception raised in the thread (see Error handling).
 
-An `Event` is a tiny record `{kind, payload}` where `kind` is one of the strings above. Two
-`queue.Queue`s (out for events, in for answers) plus a completion flag are the entire concurrency
-surface; that is deliberately the smallest primitive that works.
+An `Event` is a tiny record `{kind, payload}` where `kind` is one of the strings above. The
+concurrency surface is one append-only `history` list (worker appends events; the UI thread appends
+answers and reads) plus one `queue.Queue` the worker blocks on for the next answer - deliberately the
+smallest primitive that works.
 
 ### `app.py` - the Streamlit view
 
-One page holding a single `GraphRunner` in `st.session_state` across reruns. Four sections gated on
-the derived phase (`interview -> training -> report -> monitor -> done`). Phase is *derived* by the
-UI from the events it has seen plus whether `final_state()` is set; the graph's internal `event`
-field never leaks into the UI.
+One page that renders as a pure function of the `GraphRunner`'s transcript. The runner is held in
+`st.cache_resource` (not `st.session_state`) so it survives reruns *and* fresh sessions (refreshes).
+Four sections gated on the derived phase (`interview -> training -> report -> monitor -> done`).
+Phase is *derived* by the UI from the events it has seen plus whether `final_state()` is set; the
+graph's internal `event` field never leaks into the UI.
 
 ## Data flow (the bridge)
 
-Two interaction modes, split by phase, because a blocking graph and a rerun-on-interaction UI need
-different handling.
+> **Revision (2026-07-04, after live testing).** The first cut split the UI into a rerun-driven
+> chat plus an in-script `while`-loop for training, coordinated through `st.session_state`. Three
+> bugs came out of that: a browser refresh restarted from the Start screen, training finished but
+> the report/monitor never rendered (a dead `st.stop()` with nothing to wake it), and answering a
+> question re-rendered the same question because `pending_prompt()` was read stale right after
+> `answer()`. Root cause: the view was **not a pure function of runner state** and it raced the
+> worker on a mutable flag. The section below describes the shipped design that replaced it. The
+> app.py docstring is the living source of truth.
 
-### Interview phase = rerun-driven (natural chat)
+The view is a **pure function of an append-only transcript** the runner exposes as
+`history()` (bot prompts, applied-default notifications, and the user's own answers, in order),
+plus a few state reads (`pending_prompt()`, `saw()`, `done`, `final_state()`). Every rerun rebuilds
+the whole page from that transcript, so a fresh page load (browser refresh) reproduces the exact
+same page.
+
+Two rules make the concurrency safe:
+
+- `answer(text)` clears the pending prompt **synchronously** (on the UI thread) and records the
+  answer in the transcript, *then* unblocks the worker. So the run immediately after an answer never
+  sees the just-answered prompt as still pending, and the next reply can never land on the wrong
+  field.
+- The worker thread only appends to `history` and reads the answer queue; it never touches `st.*`.
 
 ```
-thread: ask("Q1")  -> puts ("prompt","Q1") on out-queue, then blocks on in-queue.get()
-UI rerun: poll() drains ("prompt","Q1") -> append to chat, show st.chat_input
-user submits -> runner.answer(text) puts on in-queue -> st.rerun()
-thread: ask() unblocks -> classify_turn (one LLM call) -> ask("Q2") -> repeat
+Start click -> build GraphRunner, start() its thread, store it in st.cache_resource
+thread: ask("Q1") -> history += prompt("Q1"), set pending="Q1", block on answer
+UI run: render history; pending? -> show st.chat_input, wait (worker is blocked)
+user submits -> runner.answer(text): pending=None + history += answer(text) + unblock -> st.rerun()
+UI run: render history; pending is None, not done -> show "Thinking..." -> sleep(0.5) + st.rerun()
+thread: ask() unblocks -> classify_turn (one LLM call) -> ask("Q2") -> history += prompt("Q2")
+UI run: pending="Q2" -> show st.chat_input ... (repeat until interview_done -> training)
 ```
 
-Each user message is one rerun. The bot's reply appears on the next rerun once the thread posts the
-next prompt. Between submit and next prompt there is a ~1-2s LLM call, so after `answer()` the UI
-shows a "thinking" spinner and runs a short bounded poll-loop until the next `prompt` (or a phase
-change) arrives.
+**One rerun point drives all progress.** While the run is active and *not* waiting on the user
+(`not done` and no pending prompt), the script does `time.sleep(0.5); st.rerun()`. That single poll
+covers both the "thinking" gap between interview turns and the multi-minute training wait (the
+training section shows an elapsed timer via `runner.training_elapsed()`). When a prompt is pending
+the script shows the chat box and stops (the worker is blocked, so there is nothing to poll). When
+`done`, it renders the leaderboard + metrics + report + monitor alerts/tickets and settles with no
+further rerun. Monitor alerts are the *real* decisions the graph already computed (batched), read
+from `final_state()["alerts"]`.
 
-### Training + monitor phases = in-script polling loop (no rerun churn)
+**Refresh-survival:** the `GraphRunner` is held in `st.cache_resource` (a process-global singleton),
+not `st.session_state`. A browser refresh is a fresh session but reconnects to the same running
+runner and rebuilds the page from its transcript; the background thread never stopped.
+(ponytail: a global singleton is a single-user-demo simplification, not multi-user safe; a real web
+app would key the runner per session/user.)
 
-When `poll()` returns `training_started`, the script enters a live block that updates placeholders
-in place (Streamlit permits updating placeholders inside a running script):
-
-```python
-with st.status("Comparing model families...") as status:
-    while not runner.saw("training_finished"):
-        for ev in runner.poll():
-            ...  # append notifications to the status, update elapsed timer
-        time.sleep(0.5)
-# then render leaderboard + best model + held-out RMSE/MAE/R2 from final_state
-```
-
-Monitor is the same shape but fast: once `final_state()` is available, the UI animates through
-`final["alerts"]` as a stepper (these are the *real* decisions, revealed progressively - the monitor
-computes them in one batched pass) and renders a card per filed ticket.
-
-**Design decision:** the training/monitor live view uses an in-script `while` + `time.sleep(0.5)`
-poll loop rather than a third-party auto-refresh component. This avoids an extra dependency and is
-the standard Streamlit idiom; one script run is "parked" polling during training, which is fine for
-a single-user demo. Approved over the auto-refresh-component alternative.
+**Design decision:** a `sleep + st.rerun()` busy-poll rather than a third-party auto-refresh
+component - no extra dependency, and fine for one viewer. A real web app would use a push channel
+(websocket/SSE) instead.
 
 ## Error handling
 
@@ -134,13 +152,17 @@ a single-user demo. Approved over the auto-refresh-component alternative.
 
 ## Testing
 
-- `tests/test_dashboard_runner.py` - one offline unit test for `GraphRunner`, using the *same*
-  fakes `tests/test_agents.py` already uses (fake providers, stub `train_fn`) plus scripted answers
-  fed through `answer()`. Asserts the queue bridge carries a full conversation to a completed
-  `final_state`: prompts come out, answers go in, report + alerts land. No Streamlit, no live LLM,
-  no PyCaret.
-- `app.py` is a thin view and is not unit-tested (testing Streamlit scripts needs its own harness;
-  YAGNI for an MVP). It is exercised by running it.
+- `tests/test_dashboard_runner.py` - offline unit tests for `GraphRunner`, using the *same* fakes
+  `tests/test_agents.py` uses (fake providers, stub `train_fn`) plus scripted answers fed through
+  `answer()`. Asserts the bridge carries a full conversation to a completed `final_state` (prompts
+  out, answers in, report + alerts land), that `answer()` clears the pending prompt synchronously,
+  and that `history()` is an append-only transcript including the user's answers. No Streamlit, no
+  live LLM, no PyCaret.
+- `tests/test_dashboard_app.py` - runs the real `app.py` via Streamlit's `AppTest` (LLM + training
+  faked) and locks the three UI-bug fixes: the run self-advances after each answer, the report +
+  monitor render once training finishes, and a fresh session (refresh) reconnects instead of
+  restarting. Guarded by `pytest.importorskip("streamlit")`, so CI without the `dashboard` extra
+  stays green.
 
 ## Packaging and running
 
