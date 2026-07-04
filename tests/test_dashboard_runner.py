@@ -142,6 +142,48 @@ def test_runner_surfaces_training_failure_without_hanging(tmp_path):
     assert runner.error is None  # a graph-handled failure is NOT an unexpected thread error
 
 
+def test_answer_clears_pending_synchronously():
+    # Root cause of the "next prompt didn't load; my reply answered the wrong
+    # question" bug: after answer(), pending_prompt() must be None IMMEDIATELY,
+    # without waiting for the worker thread to consume the reply. Otherwise the UI
+    # re-renders the just-answered prompt and the next reply lands on the wrong field.
+    runner = GraphRunner(
+        graph=object(),
+        provider_smart=object(),
+        provider_cheap=object(),
+        train_fn=lambda c: None,
+        ticket_dir="x",
+    )
+    runner._pending_prompt = "Q1"  # simulate the worker having asked a question
+    runner.answer("my answer")
+    assert runner.pending_prompt() is None
+
+
+def test_history_records_full_transcript(tmp_path):
+    # The UI renders from an append-only transcript (so a browser refresh can
+    # rebuild the whole conversation). history() must carry bot prompts, applied
+    # -default notifications, AND the user's own answers, in order.
+    smart = QueueProvider([_gate(True)])
+    runner = GraphRunner(
+        graph=build_graph(),
+        provider_smart=smart,
+        provider_cheap=FakeProvider("Report."),
+        train_fn=lambda cfg: _fake_run(),
+        ticket_dir=str(tmp_path),
+    )
+    runner.start()
+    assert _wait(lambda: runner.pending_prompt() is not None)
+    runner.answer("yes, use defaults")
+    assert _wait(lambda: runner.done)
+
+    kinds = [e.kind for e in runner.history()]
+    assert kinds[0] == "prompt"  # the up-front gate question
+    assert "answer" in kinds  # the user's reply is recorded in the transcript
+    assert "notify" in kinds  # applied-default announcements
+    # The user's answer appears after the prompt it answered.
+    assert kinds.index("answer") > kinds.index("prompt")
+
+
 def test_poll_returns_notify_events(tmp_path):
     # All-defaults path announces each applied default via notify -> Event(kind="notify").
     smart = QueueProvider([_gate(True)])
