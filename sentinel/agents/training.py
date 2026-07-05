@@ -87,6 +87,27 @@ class TrainingRun:
         }
 
 
+def _model_progress() -> "Callable[[str, dict], None]":
+    """Build an `on_model(name, cv_metrics)` that streams one event per trained model.
+
+    Uses the graph's active stream writer so each model PyCaret finishes surfaces
+    as a `model_trained` custom event (the long comparison is otherwise silent).
+    Degrades to a no-op when there is no active stream (direct/CLI-less use), the
+    same seam the interviewer/trainer use for their custom events.
+    """
+    try:
+        from langgraph.config import get_stream_writer
+
+        writer = get_stream_writer()
+    except Exception:  # noqa: BLE001 - no active stream context; run silently
+        return lambda name, metrics: None
+
+    def on_model(name: str, cv_metrics: dict) -> None:
+        writer({"type": "model_trained", "name": name, "cv_metrics": cv_metrics})
+
+    return on_model
+
+
 def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir: str = "artifacts") -> TrainingRun:
     """Load FD001, featurize, train/evaluate, and build a prediction function."""
     set_seeds()
@@ -103,6 +124,7 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
         test_df=test_eval,
         artifacts_dir=artifacts_dir,
         ignore_features=["unit", "cycle"],
+        on_model=_model_progress(),
     )
 
     # Load the persisted preprocessing+model pipeline so the monitor can predict

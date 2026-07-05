@@ -148,6 +148,24 @@ It uses the same provider config as the CLI (`SENTINEL_LLM_PROVIDER` + your key 
 `.env`), runs the real graph end to end, and writes the same mock tickets to
 `artifacts/tickets/`.
 
+The SSE events a stream can carry: `prompt` (a question awaiting an answer),
+`notify` (a status or applied-default line), `training` (`phase` started/finished),
+`model_trained` (one per candidate model the trainer finishes, with its cross-validated
+`cv_metrics` - so the long model comparison reports progress instead of going silent),
+`report` (the final report text), `done` (terminal), and `error`.
+
+**Testing the streaming endpoints: use `curl -N` or a browser `EventSource`, not
+Swagger `/docs`.** Swagger buffers the entire `text/event-stream` and only renders it
+after the stream closes, so a live run (which holds the connection open for minutes
+while PyCaret trains) looks frozen and then dumps everything at once - it is not a
+hang. Watch events arrive live with:
+
+```bash
+curl -N -X POST localhost:8000/sessions            # note the x-thread-id response header
+curl -N -X POST localhost:8000/sessions/<id>/resume \
+     -H 'content-type: application/json' -d '{"answer": "yes, use defaults"}'
+```
+
 ## Tests, lint, and CI
 
 The unit tests in `tests/` are fast and fully offline. `test_core_helpers.py`

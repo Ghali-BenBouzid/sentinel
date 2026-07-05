@@ -354,6 +354,59 @@ def _sse(event: str, data) -> str:
 One JSON object per line, `event`/`data` shape, blank line terminator - that is the
 entire Server-Sent-Events wire format this API needs.
 
+### Per-model progress: streaming across the DS-core boundary
+
+The trainer's `training` started/finished bracket has a gap: model comparison is the
+slow part (PyCaret cross-validates a whole shelf of regressors), and between the two
+brackets the stream goes silent for minutes.
+So training also emits one `model_trained` event per candidate model, carrying that
+model's cross-validated metrics.
+
+The interesting part is *where* the event comes from.
+The actual training loop lives in the DS core (`sentinel/core/automl.py`), which is
+deliberately framework-agnostic - it must not import LangGraph.
+So `train_and_evaluate` takes a plain `on_model(name, cv_metrics)` callback and knows
+nothing about streams; it just trains each model with `create_model` (one at a time,
+instead of one opaque `compare_models` call) and calls the callback after each.
+The agent-layer wrapper `run_training` (`sentinel/agents/training.py`) is what bridges
+the two worlds: it grabs the active `get_stream_writer()` and hands the DS core an
+`on_model` that turns each call into a `model_trained` custom event.
+
+```python
+# sentinel/agents/training.py - the bridge
+def _model_progress():
+    try:
+        from langgraph.config import get_stream_writer
+        writer = get_stream_writer()
+    except Exception:                         # no active stream -> run silently
+        return lambda name, metrics: None
+    return lambda name, metrics: writer({"type": "model_trained", "name": name, "cv_metrics": metrics})
+```
+
+That is the general pattern for progress from a layer that should not know about the
+graph: the *inner* layer exposes a callback seam, the *wrapping node* connects that
+seam to the stream.
+The DS core stays pure and independently testable (the winner-selection logic is
+`_rank_models`, a pure function with its own unit test), and the event still reaches
+the client with no change to `_run` - because, again, `_run` forwards any `type` field
+as its own SSE event.
+
+### Watch out: you cannot see SSE in Swagger `/docs`
+
+A real debugging story worth internalizing.
+Swagger UI's "Try it out" **buffers the entire `text/event-stream` and only renders it
+after the stream closes.**
+Drive a real run through `/docs` and it looks frozen for minutes (while PyCaret trains,
+holding the connection open with no bytes flowing), then dumps every event at once when
+the graph finishes - which reads exactly like a hang that "finally ended," even though
+the server behaved perfectly the whole time.
+Test streaming endpoints with something that renders events as they arrive: `curl -N`
+(the `-N`/`--no-buffer` flag matters), or a browser `EventSource`.
+The `GET /sessions/{id}` snapshot showing `done` while the `POST .../resume` stream
+still "hangs" in `/docs` is the same illusion: the graph really did finish and
+checkpoint (so the instant JSON snapshot sees `done`), while Swagger is still buffering
+the about-to-close stream.
+
 ---
 
 ## 5. The API contract: three endpoints, SSE out, POST in

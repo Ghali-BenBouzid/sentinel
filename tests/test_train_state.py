@@ -179,3 +179,53 @@ def test_full_graph_under_strict_msgpack_no_dataclass_crosses(tmp_path, monkeypa
     # Nothing checkpointed is a dataclass INSTANCE (the native-only invariant).
     for value in graph.get_state(thread).values.values():
         assert not (dataclasses.is_dataclass(value) and not isinstance(value, type))
+
+
+def test_model_trained_events_stream_from_the_trainer(tmp_path, monkeypatch):
+    """Each model the trainer finishes surfaces as a `model_trained` custom event.
+
+    Mirrors how the real `run_training` calls `on_model` per `create_model`: a
+    fake `train_fn` grabs the active stream writer and emits one event per model,
+    proving the events flow out through `graph.stream(stream_mode="custom")`.
+    """
+    from langgraph.config import get_stream_writer
+
+    from sentinel.agents import monitor
+    from sentinel.agents.graph import build_graph
+
+    class GateProvider:
+        def complete(self, messages, **kwargs) -> str:
+            return '{"all_defaults": true}'
+
+    class ReportProvider:
+        def complete(self, messages, **kwargs) -> str:
+            return "Report: fine."
+
+    def train_fn(config):
+        writer = get_stream_writer()
+        for name, rmse in [("Extra Trees Regressor", 17.1), ("LightGBM", 18.4)]:
+            writer({"type": "model_trained", "name": name, "cv_metrics": {"rmse": rmse}})
+        return _fake_run()
+
+    monkeypatch.setattr(monitor, "load_predict", lambda model_path: (lambda f: [50.0] * len(f)))
+
+    configurable = {
+        "provider_smart": GateProvider(),
+        "provider_cheap": ReportProvider(),
+        "train_fn": train_fn,
+        "ticket_dir": str(tmp_path),
+    }
+    thread = {"configurable": {**configurable, "thread_id": "prog1"}}
+    graph = build_graph(checkpointer=MemorySaver())
+
+    events = []
+    for mode, chunk in graph.stream({"event": "start"}, thread, stream_mode=["custom", "updates"]):
+        if mode == "custom":
+            events.append(chunk)
+    for mode, chunk in graph.stream(Command(resume="yes defaults"), thread, stream_mode=["custom", "updates"]):
+        if mode == "custom":
+            events.append(chunk)
+
+    trained = [e for e in events if e.get("type") == "model_trained"]
+    assert [e["name"] for e in trained] == ["Extra Trees Regressor", "LightGBM"]
+    assert trained[0]["cv_metrics"]["rmse"] == 17.1

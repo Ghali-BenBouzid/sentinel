@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from sentinel.core.automl import _rank_models
 from sentinel.core.data import add_rul
 from sentinel.core.features import build_features, informative_sensors
 
@@ -51,3 +52,23 @@ def test_build_features_shape_and_per_unit_isolation():
         "s1_slope"
     ].iloc[0]
     assert u1_last_slope == 2.0
+
+
+def test_rank_models_orders_by_rmse_and_picks_lowest():
+    # Winner is decided by cross-validated RMSE (lower is better), regardless of
+    # the order models were trained in - this is the selection contract that
+    # replaced compare_models(sort="RMSE").
+    et = object()
+    results = [
+        ("Linear Regression", {"RMSE": 25.0, "MAE": 20.0, "R2": 0.4}, object()),
+        ("Extra Trees Regressor", {"RMSE": 17.1, "MAE": 12.0, "R2": 0.82}, et),
+        ("LightGBM", {"RMSE": 18.4, "MAE": 13.0, "R2": 0.79}, object()),
+    ]
+
+    leaderboard, best_model, best_name = _rank_models(results)
+
+    assert best_name == "Extra Trees Regressor"
+    assert best_model is et  # the actual fitted object, not a copy
+    # Leaderboard is best-first and carries the friendly name + its metrics.
+    assert leaderboard["Model"].tolist() == ["Extra Trees Regressor", "LightGBM", "Linear Regression"]
+    assert leaderboard.iloc[0]["RMSE"] == 17.1
