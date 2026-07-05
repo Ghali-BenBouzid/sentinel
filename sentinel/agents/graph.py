@@ -68,9 +68,10 @@ def trainer_node(state: AgentState, config) -> dict:
             "log": append_log(state, f"trainer: run FAILED ({type(exc).__name__})"),
         }
     writer({"type": "training", "phase": "finished"})
-    m = run.result.metrics
+    train_state = run.to_state()  # only serializable data crosses the checkpoint boundary
+    m = train_state["metrics"]
     line = f"trainer: run finished, held-out RMSE={m['rmse']:.2f} R2={m['r2']:.3f}"
-    return {"train_run": run, "event": "run_finished", "log": append_log(state, line)}
+    return {"train_state": train_state, "event": "run_finished", "log": append_log(state, line)}
 
 
 def route_interview(state: AgentState) -> str:

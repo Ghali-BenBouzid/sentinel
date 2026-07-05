@@ -12,7 +12,9 @@ The trainer node treats this as a black box, so tests can inject a stub
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
@@ -20,6 +22,34 @@ import pandas as pd
 from ..core import automl, data, features
 from ..pipeline import set_seeds
 from .state import InterviewConfig
+
+
+def _records(df: pd.DataFrame) -> list[dict]:
+    """DataFrame -> list of dicts with NATIVE Python types.
+
+    `df.to_dict("records")` leaks numpy scalars (np.int64/np.float64) that the
+    checkpointer's msgpack serializer rejects; the JSON round-trip forces builtins.
+    """
+    return json.loads(df.to_json(orient="records"))
+
+
+def load_predict(model_path: str) -> Callable[[pd.DataFrame], "pd.Series | list[float]"]:
+    """Load a persisted PyCaret pipeline and return a frame -> predicted-RUL fn.
+
+    Factored out of `run_training` so the monitor can rehydrate the same
+    prediction function from `model_path` after the live closure was dropped at
+    the checkpoint boundary. Imports PyCaret lazily so importing this module
+    (e.g. from the monitor) stays cheap.
+    """
+    from pycaret.regression import load_model, predict_model
+
+    model = load_model(str(Path(model_path).with_suffix("")))  # load_model wants no .pkl suffix
+
+    def predict(frame: pd.DataFrame):
+        preds = predict_model(model, data=frame)
+        return preds["prediction_label"] if "prediction_label" in preds else preds.iloc[:, -1]
+
+    return predict
 
 
 @dataclass
@@ -30,11 +60,31 @@ class TrainingRun:
     test_eval: one row per FD001 test unit at its last cycle, with true RUL -
         the "incoming readings" the monitor steps through.
     predict: maps a feature frame to predicted RUL (built from the saved model).
+
+    Only `to_state()` crosses the graph-state boundary - the live `predict`
+    closure, the DataFrames, and the estimator are not checkpoint-serializable.
     """
 
     result: automl.TrainResult
     test_eval: pd.DataFrame
     predict: Callable[[pd.DataFrame], "pd.Series | list[float]"]
+
+    def to_state(self) -> dict:
+        """Reduce to msgpack-safe native-Python data for the checkpointed state.
+
+        The heavy artifacts are rehydrated downstream: the model from
+        `model_path` (via `load_predict`), `test_eval` from its records.
+        """
+        r = self.result
+        lb = r.leaderboard
+        best = lb.iloc[0]["Model"] if "Model" in lb.columns else type(r.best_model).__name__
+        return {
+            "metrics": {k: float(v) for k, v in r.metrics.items()},
+            "leaderboard": _records(lb),
+            "best_model_name": str(best),
+            "model_path": str(r.model_path),
+            "test_eval": _records(self.test_eval),
+        }
 
 
 def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir: str = "artifacts") -> TrainingRun:
@@ -57,12 +107,6 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
 
     # Load the persisted preprocessing+model pipeline so the monitor can predict
     # standalone, without re-entering the PyCaret experiment context.
-    from pycaret.regression import load_model, predict_model
-
-    model = load_model(str(result.model_path.with_suffix("")))
-
-    def predict(frame: pd.DataFrame):
-        preds = predict_model(model, data=frame)
-        return preds["prediction_label"] if "prediction_label" in preds else preds.iloc[:, -1]
+    predict = load_predict(str(result.model_path))
 
     return TrainingRun(result=result, test_eval=test_eval, predict=predict)

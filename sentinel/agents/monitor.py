@@ -18,8 +18,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from . import domain_context
 from .state import AgentState, append_log
+from .training import load_predict
 
 WARN_FACTOR = 2.0  # report (not alert) when RUL is within this multiple of the threshold
 
@@ -89,10 +92,14 @@ def monitor_node(state: AgentState, config) -> dict:
     """Graph node: run the monitor over the training run's held-out rows."""
     cfg = config["configurable"]
     ticket_dir = Path(cfg.get("ticket_dir", "artifacts/tickets"))
-    run = state["train_run"]
+    ts = state["train_state"]
     threshold = state["config"].failure_threshold
 
-    events = run_monitor(run.test_eval, run.predict, threshold, ticket_dir)
+    # Rehydrate the model (from disk) and the held-out rows (from records) that
+    # were reduced away at the checkpoint boundary.
+    predict = load_predict(ts["model_path"])
+    test_eval = pd.DataFrame(ts["test_eval"])
+    events = run_monitor(test_eval, predict, threshold, ticket_dir)
     alerts = [e for e in events if e["decision"] == "alert"]
     line = f"monitor: {len(events)} readings flagged, {len(alerts)} alerts (tickets in {ticket_dir})"
     return {

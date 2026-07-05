@@ -20,6 +20,9 @@ text back into state. The wiring does not depend on how the prompt is built.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+import pandas as pd
 
 from ..core.automl import TrainResult
 from ..llm.provider import Provider
@@ -116,6 +119,7 @@ def write_report(
     result: TrainResult,
     provider: Provider,
     config: InterviewConfig | None = None,
+    best_model_name: str | None = None,
 ) -> str:
     """Turn a finished AutoML run into a short, grounded plain-language report.
 
@@ -132,6 +136,10 @@ def write_report(
     hard-constrained so every number in the report traces back to `result.metrics`.
     """
     m = result.metrics
+    # The best-model name may arrive as a serializable string (from checkpointed
+    # state, where the estimator itself can't survive); fall back to the live
+    # estimator's class name for direct/CLI callers that still pass a TrainResult.
+    best_model_name = best_model_name or type(result.best_model).__name__
     # Leaderboard is reduced to model *names* only: the METRICS block is the single
     # numeric source, so there is no second table of numbers for the model to
     # (mis)transcribe. Every number the report may cite lives in one place.
@@ -168,7 +176,7 @@ def write_report(
         f"{domain_context.glossary()}\n"
         "</glossary>\n\n"
         "<run>\n"
-        f"Best model: {type(result.best_model).__name__}\n"
+        f"Best model: {best_model_name}\n"
         "METRICS - the best model's scores on the HELD-OUT TEST SET (FD001 engines the "
         "model never saw during training); these are the ONLY numbers you may cite, verbatim:\n"
         f"- RMSE = {m['rmse']:.2f} cycles\n"
@@ -221,8 +229,18 @@ def report_writer_node(state: AgentState, config) -> dict:
             "log": append_log(state, "report_writer: reported failure"),
         }
 
-    run = state["train_run"]
-    report = write_report(run.result, cheap, state.get("config"))
+    ts = state["train_state"]
+    # Rebuild only what `write_report` reads from serializable state: metrics dict,
+    # a leaderboard frame (names only), and the best-model NAME (the estimator
+    # itself did not cross the checkpoint boundary).
+    result = TrainResult(
+        leaderboard=pd.DataFrame(ts["leaderboard"]),
+        best_model=None,
+        metrics=ts["metrics"],
+        model_path=Path(ts["model_path"]),
+        metrics_path=Path(ts["model_path"]),  # unused by write_report
+    )
+    report = write_report(result, cheap, state.get("config"), best_model_name=ts["best_model_name"])
     return {
         "report": report,
         "event": "report_ready",

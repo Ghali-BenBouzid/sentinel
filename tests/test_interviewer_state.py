@@ -158,7 +158,7 @@ def test_trainer_node_emits_training_progress_events(monkeypatch):
     events = []
     monkeypatch.setattr("sentinel.agents.interviewer._get_writer", lambda: events.append)
 
-    ok_run = SimpleNamespace(result=SimpleNamespace(metrics={"rmse": 1.0, "r2": 0.5}))
+    ok_run = SimpleNamespace(to_state=lambda: {"metrics": {"rmse": 1.0, "r2": 0.5}})
     ok_config = {"configurable": {"train_fn": lambda c: ok_run}}
     trainer_node({"config": None}, ok_config)
     assert events == [{"type": "training", "phase": "started"}, {"type": "training", "phase": "finished"}]

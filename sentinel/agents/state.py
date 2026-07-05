@@ -14,7 +14,7 @@ so the graph stays a pure state machine and the tests can swap in fakes. See
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TypedDict
 
 
 @dataclass
@@ -60,7 +60,7 @@ class AgentState(TypedDict, total=False):
     event: str  # significant event driving routing (interview_done, run_finished, ...)
     config: InterviewConfig  # produced by the interviewer
     interview: InterviewProgress  # checkpointed per-turn interview state
-    train_run: Any  # `training.TrainingRun` bundle produced by the trainer
+    train_state: dict  # serializable training results (`TrainingRun.to_state()`)
     report: str  # produced by the report writer
     alerts: list[dict]  # produced by the monitor (one entry per alert/report)
     error: str  # set if training failed
