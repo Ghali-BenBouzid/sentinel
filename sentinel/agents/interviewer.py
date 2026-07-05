@@ -390,6 +390,8 @@ def _prompt_for(field: str, question: str, deduced: dict, preamble: str) -> str:
 def advance(progress: InterviewProgress, reply: str, provider: Provider) -> InterviewProgress:
     """Consume one user reply; return the next InterviewProgress. One LLM call/turn."""
     p = {**progress, "notices": []}  # notices are per-turn
+    p["values"] = dict(progress["values"])  # deep-ish copy: never mutate the caller's snapshot
+    p["deduced"] = dict(progress["deduced"])
 
     if p["phase"] == "gate":
         if classify_gate(reply, provider):
