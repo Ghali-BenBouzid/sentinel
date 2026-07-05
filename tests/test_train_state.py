@@ -87,3 +87,45 @@ def test_graph_carries_train_state_across_checkpoints(tmp_path, monkeypatch):
     assert final["report"] == "Report: model looks fine."
     assert [a["unit"] for a in final["alerts"]] == [1]
     assert (tmp_path / "ticket_unit_1.json").exists()
+
+
+def test_to_state_failure_routes_to_run_failed_not_a_crash(tmp_path):
+    """`to_state()` can raise too (e.g. a serialization problem on real data).
+
+    Behind the FastAPI SSE stream, an unhandled exception here would truncate the
+    response instead of yielding a clean error event. The trainer node must treat a
+    `to_state()` failure exactly like a `train_fn` failure: no crash, `run_failed`,
+    and a descriptive `error` string for the report_writer's existing error path.
+    """
+    from sentinel.agents.graph import build_graph
+    from sentinel.agents.state import InterviewConfig
+
+    class FakeProvider:
+        def complete(self, messages, **kwargs) -> str:
+            return "Report: model looks fine."
+
+    class ExplodingRun:
+        def to_state(self):
+            raise ValueError("boom")
+
+    cfg = InterviewConfig(
+        framing="turbofan RUL",
+        failure_threshold=50,
+        reporting_cadence="each run",
+        success_metric="RMSE under 20 cycles",
+    )
+    configurable = {
+        "provider_cheap": FakeProvider(),
+        "train_fn": lambda c: ExplodingRun(),
+        "ticket_dir": str(tmp_path),
+    }
+
+    graph = build_graph(checkpointer=MemorySaver())
+    final = graph.invoke(
+        {"event": "interview_done", "config": cfg},
+        config={"configurable": configurable, "thread_id": "t2"},
+    )
+
+    assert final["event"] == "failed_reported"
+    assert "ValueError: boom" in final["error"]
+    assert "boom" in final["report"]

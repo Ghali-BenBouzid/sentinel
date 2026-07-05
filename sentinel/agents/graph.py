@@ -61,14 +61,14 @@ def trainer_node(state: AgentState, config) -> dict:
     writer({"type": "training", "phase": "started"})
     try:
         run = train_fn(state["config"])
-    except Exception as exc:  # noqa: BLE001 - surface any DS-core failure as an event
+        train_state = run.to_state()  # only serializable data crosses the checkpoint boundary
+    except Exception as exc:  # noqa: BLE001 - surface any DS-core (or serialization) failure as an event
         return {
             "error": f"{type(exc).__name__}: {exc}",
             "event": "run_failed",
             "log": append_log(state, f"trainer: run FAILED ({type(exc).__name__})"),
         }
     writer({"type": "training", "phase": "finished"})
-    train_state = run.to_state()  # only serializable data crosses the checkpoint boundary
     m = train_state["metrics"]
     line = f"trainer: run finished, held-out RMSE={m['rmse']:.2f} R2={m['r2']:.3f}"
     return {"train_state": train_state, "event": "run_finished", "log": append_log(state, line)}
