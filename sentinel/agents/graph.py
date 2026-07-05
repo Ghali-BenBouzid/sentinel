@@ -54,7 +54,11 @@ def orchestrator_node(state: AgentState) -> dict:
 
 def trainer_node(state: AgentState, config) -> dict:
     """Run the M1 DS core via the injected `train_fn`; emit run_finished/run_failed."""
+    from .interviewer import _get_writer
+
+    writer = _get_writer()
     train_fn = config["configurable"]["train_fn"]
+    writer({"type": "training", "phase": "started"})
     try:
         run = train_fn(state["config"])
     except Exception as exc:  # noqa: BLE001 - surface any DS-core failure as an event
@@ -63,6 +67,7 @@ def trainer_node(state: AgentState, config) -> dict:
             "event": "run_failed",
             "log": append_log(state, f"trainer: run FAILED ({type(exc).__name__})"),
         }
+    writer({"type": "training", "phase": "finished"})
     m = run.result.metrics
     line = f"trainer: run finished, held-out RMSE={m['rmse']:.2f} R2={m['r2']:.3f}"
     return {"train_run": run, "event": "run_finished", "log": append_log(state, line)}

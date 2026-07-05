@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -112,6 +114,59 @@ def test_graph_interview_one_llm_call_per_turn():
         graph.invoke(Command(resume=a), thread)
     # One classifier call per delivered answer (gate + 4 fields) - NO replay.
     assert p.calls == 5
+
+
+def test_interview_defaults_stream_as_custom_events():
+    """Custom stream events (notify acks, training progress) surface through
+    graph.stream(..., stream_mode=["custom", "updates"]) - the _get_writer()
+    plumbing from Task 3, exercised end to end here through a real checkpointed run.
+
+    train_fn raises here (like test_graph_interview_one_llm_call_per_turn's "boom"
+    pattern above) so the run stops at report_writer's error path - the trainer's
+    "finished" event on a *successful* run is covered separately below by
+    test_trainer_node_emits_training_progress_events, since a TrainingRun carrying a
+    live predict closure can't round-trip through the checkpointer's msgpack serde
+    (a pre-existing state-shape limitation, not something Task 4 owns fixing)."""
+    from sentinel.agents.graph import build_graph
+
+    p = OneShotProvider(['{"all_defaults": true}'])
+    cfg = {
+        "provider_smart": p,
+        "provider_cheap": p,
+        "train_fn": lambda c: (_ for _ in ()).throw(RuntimeError("boom")),
+        "ticket_dir": "artifacts/tickets",
+    }
+    graph = build_graph(checkpointer=MemorySaver())
+    thread = {"configurable": {**cfg, "thread_id": "s"}}
+    events = []
+    for mode, chunk in graph.stream({"event": "start"}, thread, stream_mode=["custom", "updates"]):
+        if mode == "custom":
+            events.append(chunk)
+    # the gate turn interrupts first; resume to accept defaults and flush notices
+    for mode, chunk in graph.stream(Command(resume="yes defaults"), thread, stream_mode=["custom", "updates"]):
+        if mode == "custom":
+            events.append(chunk)
+    assert any(e.get("type") == "notify" and "default" in e["text"].lower() for e in events)
+    assert {"type": "training", "phase": "started"} in events
+
+
+def test_trainer_node_emits_training_progress_events(monkeypatch):
+    """Direct unit check of trainer_node's bracketing: started+finished on a
+    successful run, started-only (no finished) when train_fn raises."""
+    from sentinel.agents.graph import trainer_node
+
+    events = []
+    monkeypatch.setattr("sentinel.agents.interviewer._get_writer", lambda: events.append)
+
+    ok_run = SimpleNamespace(result=SimpleNamespace(metrics={"rmse": 1.0, "r2": 0.5}))
+    ok_config = {"configurable": {"train_fn": lambda c: ok_run}}
+    trainer_node({"config": None}, ok_config)
+    assert events == [{"type": "training", "phase": "started"}, {"type": "training", "phase": "finished"}]
+
+    events.clear()
+    fail_config = {"configurable": {"train_fn": lambda c: (_ for _ in ()).throw(RuntimeError("boom"))}}
+    trainer_node({"config": None}, fail_config)
+    assert events == [{"type": "training", "phase": "started"}]
 
 
 def test_default_checkpointer_creates_missing_parent_dir(tmp_path, monkeypatch):
