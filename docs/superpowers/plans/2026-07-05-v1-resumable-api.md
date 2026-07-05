@@ -497,6 +497,111 @@ git commit -m "feat(graph): stream notify + training progress as custom events"
 
 ---
 
+### Task 9: Make training state checkpoint-serializable (AMENDMENT - execute HERE, between Task 4 and Task 5)
+
+Added 2026-07-05 after discovering the checkpointer serializes all state after every node and LangGraph 1.2.7 has no pickle fallback. See the spec's "Component 3b". The old `train_run` (closure + DataFrames + estimator) cannot be checkpointed; the real train->report->monitor path would crash. Numbered 9 only so `task-brief` extracts it cleanly; it runs before Task 5.
+
+**Files:**
+- Modify: `sentinel/agents/training.py` (add a `to_state()` seam + a `load_predict(model_path)` helper factored out of `run_training`)
+- Modify: `sentinel/agents/graph.py` (`trainer_node` writes serializable state)
+- Modify: `sentinel/agents/state.py` (`AgentState`: replace `train_run: Any` with serializable fields, or a `train_state: dict`)
+- Modify: `sentinel/agents/report_writer.py` (`report_writer_node` builds what `write_report` needs from serializable state)
+- Modify: `sentinel/agents/monitor.py` (`monitor_node` rehydrates model + test_eval from state)
+- Test: `tests/test_train_state.py` (create)
+
+**Interfaces:**
+- Produces `TrainingRun.to_state() -> dict` with ONLY msgpack-safe values (native Python types, NOT numpy scalars): `{"metrics": dict[str,float], "leaderboard": list[dict], "best_model_name": str, "model_path": str, "test_eval": list[dict]}`.
+- Produces `load_predict(model_path: str) -> Callable[[pd.DataFrame], list[float]]` in `training.py`, factored out of `run_training` and reused by the monitor.
+- `trainer_node` now returns `{"train_state": run.to_state(), "event": "run_finished", ...}` (plus the `started`/`finished` writer events from Task 4). It no longer puts the live `TrainingRun` in state.
+- `report_writer_node` consumes `state["train_state"]`; `monitor_node` consumes `state["train_state"]`.
+
+- [ ] **Step 1: Write the failing serialization round-trip test**
+
+This is the load-bearing check - the exact failure the amendment fixes.
+In `tests/test_train_state.py`:
+```python
+import pandas as pd
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+
+def _fake_run():
+    from sentinel.agents.training import TrainingRun
+    from sentinel.core.automl import TrainResult
+    from pathlib import Path
+    lb = pd.DataFrame([{"Model": "Extra Trees", "RMSE": 17.1}, {"Model": "LightGBM", "RMSE": 18.4}])
+    result = TrainResult(leaderboard=lb, best_model=object(), metrics={"rmse": 17.1, "mae": 12.0, "r2": 0.83},
+                         model_path=Path("artifacts/model"), metrics_path=Path("artifacts/metrics.json"))
+    test_eval = pd.DataFrame([{"unit": 1, "cycle": 200, "RUL": 40.0, "s2": 1.5}])
+    return TrainingRun(result=result, test_eval=test_eval, predict=lambda f: [1.0])
+
+
+def test_to_state_is_msgpack_serializable():
+    state = _fake_run().to_state()
+    blob = JsonPlusSerializer().dumps_typed(state)          # raises if any value is unserializable
+    back = JsonPlusSerializer().loads_typed(blob)
+    assert back["metrics"]["rmse"] == 17.1
+    assert back["best_model_name"] == "Extra Trees"        # from leaderboard row 0 / type name
+    assert isinstance(back["test_eval"], list) and back["test_eval"][0]["unit"] == 1
+    # numpy scalars would break msgpack: assert everything is native
+    for rec in back["test_eval"] + back["leaderboard"]:
+        for v in rec.values():
+            assert type(v).__module__ == "builtins"
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `uv run pytest tests/test_train_state.py -v`
+Expected: FAIL (`to_state` not defined, or numpy types not serializable).
+
+- [ ] **Step 3: Implement `to_state()` + `load_predict()` in `training.py`**
+
+Factor the model-loading closure out of `run_training` into `load_predict(model_path)` and call it from `run_training` (no behavior change there). Add `to_state()` to `TrainingRun`. Coerce every DataFrame to NATIVE types - do NOT use a bare `df.to_dict("records")` (it yields numpy scalars that msgpack rejects); use a JSON round-trip so types are native:
+```python
+import json
+
+def _records(df):
+    return json.loads(df.to_json(orient="records"))   # guarantees native Python types
+
+class TrainingRun:
+    ...
+    def to_state(self) -> dict:
+        r = self.result
+        best = r.leaderboard.iloc[0]["Model"] if "Model" in r.leaderboard.columns else type(r.best_model).__name__
+        return {
+            "metrics": {k: float(v) for k, v in r.metrics.items()},
+            "leaderboard": _records(r.leaderboard),
+            "best_model_name": str(best),
+            "model_path": str(r.model_path),
+            "test_eval": _records(self.test_eval),
+        }
+```
+(Inspect the real leaderboard columns; use the actual model-name column. If the best model name is more reliably `type(r.best_model).__name__`, use that and drop the leaderboard lookup - the test allows either as long as it equals "Extra Trees" for the fixture. Adjust the fixture/impl to agree.)
+
+- [ ] **Step 4: Update `state.py`, `trainer_node`, `report_writer_node`, `monitor_node`**
+
+- `AgentState`: remove `train_run: Any`; add `train_state: dict`.
+- `trainer_node` (graph.py): `run = train_fn(state["config"])` then `return {"train_state": run.to_state(), "event": "run_finished", ...}` keeping the Task 4 `started`/`finished` writer events. On exception keep `run_failed` as-is.
+- `report_writer_node`: build the METRICS/leaderboard inputs for `write_report` from `state["train_state"]`. The report's grounding-constrained prompt, its Do/Don't rules, and the single METRICS block MUST stay byte-identical - only the SOURCE of the numbers changes. Simplest: reconstruct a `TrainResult`-shaped input where `write_report` reads it (`metrics` dict directly; `leaderboard` via `pd.DataFrame(state["train_state"]["leaderboard"])`; the "Best model: X" line uses `state["train_state"]["best_model_name"]`). If `write_report` currently does `type(result.best_model).__name__`, change that ONE line to take the name string; do not touch the prompt text or number formatting.
+- `monitor_node`: `ts = state["train_state"]; predict = load_predict(ts["model_path"]); test_eval = pd.DataFrame(ts["test_eval"]); run_monitor(test_eval, predict, threshold, ticket_dir)`.
+
+- [ ] **Step 5: Add a graph-level test with a serializable fake train_fn**
+
+In `tests/test_train_state.py`, drive the graph past the trainer with a `MemorySaver` and a fake `train_fn` returning a `TrainingRun` whose `predict`/`model_path` are stubbed so the monitor runs offline (e.g. monkeypatch `load_predict` to return `lambda f: [50.0]*len(f)`), and assert the graph reaches `monitor_done` with no serialization error and produces `alerts`. This proves state crosses the trainer->report->monitor checkpoints intact.
+
+- [ ] **Step 6: Run tests**
+
+Run: `uv run pytest tests/test_train_state.py tests/test_interviewer_state.py tests/test_config.py -v`
+Expected: PASS. (`tests/test_agents.py` and `tests/test_dashboard_runner.py` remain expected-broken until Tasks 5/7.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add sentinel/agents/training.py sentinel/agents/graph.py sentinel/agents/state.py sentinel/agents/report_writer.py sentinel/agents/monitor.py tests/test_train_state.py
+git commit -m "fix(graph): carry training results through state as serializable data (checkpoint-safe)"
+```
+
+---
+
 ### Task 5: CLI driver becomes a stream/resume loop; adapt `test_agents.py`
 
 **Files:**

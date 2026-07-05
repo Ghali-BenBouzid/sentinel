@@ -108,6 +108,25 @@ No injected callable, and it works identically under the CLI driver and the HTTP
 
 Trainer progress: the trainer node brackets the long PyCaret run with `writer({"type": "training", "phase": "started"|"finished"})` events, replacing the `GraphRunner` wrapping that did this before.
 
+## Component 3b - training results must be checkpoint-serializable (decision added 2026-07-05)
+
+A consequence the initial design missed: once the graph compiles with a checkpointer, LangGraph serializes the *entire* state after every node, not just at interrupts.
+LangGraph 1.2.7's serializer (`JsonPlusSerializer`, msgpack) has **no pickle fallback** - it raises `Type is not msgpack serializable` for anything that is not a primitive, dict, list, or a type it explicitly handles (verified: plain dicts and `Path` survive; a closure, a `pandas.DataFrame`, and a sklearn estimator all fail).
+
+The old `TrainingRun` (`sentinel/agents/training.py`) carried a `predict` closure, a `test_eval` DataFrame, and a `TrainResult` (sklearn estimator + leaderboard DataFrame) through `state["train_run"]`.
+None of that can be checkpointed, so the real interview -> train -> report -> monitor path would crash at the first checkpoint after training. Fake `train_fn`s in tests hid it.
+
+**Decision: keep only serializable data in state; rehydrate heavy artifacts from disk.**
+PyCaret already persists the fitted pipeline to disk during training (`result.model_path`), and `test_eval` is ~100 rows derived deterministically from FD001, so nothing needs to be reserialized that is not already cheap or already on disk.
+
+- The trainer node writes into state only: the metrics `dict`, the leaderboard as records (`list[dict]`), the best-model name (`str`), `model_path` (`str`), and `test_eval` as records (`list[dict]`).
+- The report writer reads the metrics/leaderboard from those plain values (its grounding rules and the single METRICS block are unchanged; only the source of the numbers moves from a `TrainResult` attribute to a dict).
+- The monitor loads the model from `model_path` (the same `load_model` + `predict_model` the trainer used to build its closure) and rebuilds the `test_eval` frame from records, then runs exactly as before.
+- `run_training`/`TrainingRun` still return the live objects for direct/CLI use; only what crosses the graph state boundary is reduced to serializable form (via a small `to_state()`/`from_state()` seam).
+
+This preserves the resumability the whole refactor exists for (state survives a restart because it is genuinely serializable) and keeps heavy artifacts where they already live (on disk), at the cost of a small rehydration step in the monitor.
+The rejected alternative - a process-local registry holding the live `TrainingRun` keyed by `thread_id` - needed fewer node changes but is process-local, so it does not survive restart or scale to multiple workers, defeating the checkpointer for the post-training phase.
+
 ## Component 4 - the FastAPI surface
 
 Server-to-client streaming uses Server-Sent Events; client-to-server uses plain POST.
