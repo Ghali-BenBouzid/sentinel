@@ -76,16 +76,19 @@ def train_and_evaluate(
     include: list[str] | None = DEFAULT_MODELS,
     session_id: int = 42,
     fold: int = 3,
-    on_model: Callable[[str, dict], None] | None = None,
+    on_model_start: Callable[[str, int, int], None] | None = None,
+    on_model_end: Callable[[str, int, int, dict], None] | None = None,
 ) -> TrainResult:
     """Set up PyCaret, train each candidate model, finalize the best, evaluate + persist.
 
     - `ignore_features`: kept in the frame but excluded from the model (e.g.
       the `unit` identifier and raw `cycle`).
     - Each candidate is trained one at a time (`create_model`) rather than in a
-      single opaque `compare_models` call, so `on_model(name, cv_metrics)` can
-      report progress after every model. Selection is still by cross-validated
-      RMSE - identical winner to `compare_models(sort="RMSE")`.
+      single opaque `compare_models` call, so two PyTorch-style lifecycle hooks can
+      report progress: `on_model_start(name, index, total)` fires just before a
+      model is trained, `on_model_end(name, index, total, cv_metrics)` right after.
+      `index` is 1-based, `total` is the candidate count. Selection is still by
+      cross-validated RMSE - identical winner to `compare_models(sort="RMSE")`.
     - Evaluation is on `test_df` (the real FD001 test set), not just CV folds.
     - Saves the finalized model and a `metrics.json` under `artifacts_dir`.
     """
@@ -107,17 +110,23 @@ def train_and_evaluate(
     candidate_ids = list(include) if include is not None else list(name_of)
 
     results: list[tuple[str, dict, object]] = []
-    for model_id in candidate_ids:
+    total = len(candidate_ids)
+    for index, model_id in enumerate(candidate_ids, start=1):
+        name = name_of.get(model_id, str(model_id))
+        if on_model_start is not None:
+            on_model_start(name, index, total)  # announce before the slow CV, so the UI isn't blank
         try:
             model = create_model(model_id, verbose=False)  # trains + cross-validates
         except Exception:  # noqa: BLE001 - a single unavailable model must not sink the run
             continue
         mean = pull().loc["Mean"]  # fold-averaged CV metrics for this model
-        name = name_of.get(model_id, str(model_id))
         cv_metrics = {col: float(mean[col]) for col in mean.index if pd.notna(mean[col])}
         results.append((name, cv_metrics, model))
-        if on_model is not None:
-            on_model(name, {"rmse": cv_metrics.get("RMSE"), "mae": cv_metrics.get("MAE"), "r2": cv_metrics.get("R2")})
+        if on_model_end is not None:
+            on_model_end(
+                name, index, total,
+                {"rmse": cv_metrics.get("RMSE"), "mae": cv_metrics.get("MAE"), "r2": cv_metrics.get("R2")},
+            )
 
     leaderboard, best_model, _ = _rank_models(results)
 

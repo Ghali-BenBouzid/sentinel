@@ -359,37 +359,58 @@ entire Server-Sent-Events wire format this API needs.
 The trainer's `training` started/finished bracket has a gap: model comparison is the
 slow part (PyCaret cross-validates a whole shelf of regressors), and between the two
 brackets the stream goes silent for minutes.
-So training also emits one `model_trained` event per candidate model, carrying that
-model's cross-validated metrics.
+So training also emits **two events per candidate model** - one when it *starts*
+(`model_training`) and one when it *finishes* (`model_trained`, with that model's
+cross-validated metrics).
+Both carry `index` and `total` (1-based, e.g. 3 of 11), so a client can show "training
+3 of 11: Extra Trees Regressor..." the instant a model starts, and fill in its score
+when it ends - the start event is what keeps the UI from looking frozen during the slow
+cross-validation of a single model.
 
-The interesting part is *where* the event comes from.
+The naming is deliberately PyTorch/Keras-callback style: `on_model_start` and
+`on_model_end`, model-level because our loop trains *models* - it has no epochs or
+steps (PyCaret does the cross-validation internally), so `on_epoch_*`/`on_step_*` names
+would describe machinery that isn't there.
+Two purpose-named hooks, not one hook with a `"start"|"end"` phase argument: adding a
+lifecycle edge should *add* a hook, not rework the existing one into a phase machine
+the caller has to branch on. That is the more additive, more readable design.
+
+The interesting part is *where* the events come from.
 The actual training loop lives in the DS core (`sentinel/core/automl.py`), which is
 deliberately framework-agnostic - it must not import LangGraph.
-So `train_and_evaluate` takes a plain `on_model(name, cv_metrics)` callback and knows
-nothing about streams; it just trains each model with `create_model` (one at a time,
-instead of one opaque `compare_models` call) and calls the callback after each.
+So `train_and_evaluate` takes plain `on_model_start(name, index, total)` /
+`on_model_end(name, index, total, cv_metrics)` callbacks and knows nothing about
+streams; it just trains each model with `create_model` (one at a time, instead of one
+opaque `compare_models` call) and calls the hooks around each.
 The agent-layer wrapper `run_training` (`sentinel/agents/training.py`) is what bridges
-the two worlds: it grabs the active `get_stream_writer()` and hands the DS core an
-`on_model` that turns each call into a `model_trained` custom event.
+the two worlds: it grabs the active `get_stream_writer()` and hands the DS core a pair
+of callbacks that turn each edge into a custom event.
 
 ```python
 # sentinel/agents/training.py - the bridge
-def _model_progress():
+def _model_callbacks():
     try:
         from langgraph.config import get_stream_writer
         writer = get_stream_writer()
     except Exception:                         # no active stream -> run silently
-        return lambda name, metrics: None
-    return lambda name, metrics: writer({"type": "model_trained", "name": name, "cv_metrics": metrics})
+        return (lambda name, i, n: None), (lambda name, i, n, m: None)
+
+    def on_model_start(name, index, total):
+        writer({"type": "model_training", "name": name, "index": index, "total": total})
+
+    def on_model_end(name, index, total, cv_metrics):
+        writer({"type": "model_trained", "name": name, "index": index, "total": total, "cv_metrics": cv_metrics})
+
+    return on_model_start, on_model_end
 ```
 
 That is the general pattern for progress from a layer that should not know about the
-graph: the *inner* layer exposes a callback seam, the *wrapping node* connects that
-seam to the stream.
+graph: the *inner* layer exposes callback seams, the *wrapping node* connects those
+seams to the stream.
 The DS core stays pure and independently testable (the winner-selection logic is
-`_rank_models`, a pure function with its own unit test), and the event still reaches
-the client with no change to `_run` - because, again, `_run` forwards any `type` field
-as its own SSE event.
+`_rank_models`, a pure function with its own unit test), and the events still reach the
+client with no change to `_run` - because, again, `_run` forwards any `type` field as
+its own SSE event.
 
 ### Watch out: you cannot see SSE in Swagger `/docs`
 

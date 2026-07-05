@@ -181,12 +181,13 @@ def test_full_graph_under_strict_msgpack_no_dataclass_crosses(tmp_path, monkeypa
         assert not (dataclasses.is_dataclass(value) and not isinstance(value, type))
 
 
-def test_model_trained_events_stream_from_the_trainer(tmp_path, monkeypatch):
-    """Each model the trainer finishes surfaces as a `model_trained` custom event.
+def test_model_lifecycle_events_stream_from_the_trainer(tmp_path, monkeypatch):
+    """Each model surfaces a `model_training` (start) then a `model_trained` (end) event.
 
-    Mirrors how the real `run_training` calls `on_model` per `create_model`: a
-    fake `train_fn` grabs the active stream writer and emits one event per model,
-    proving the events flow out through `graph.stream(stream_mode="custom")`.
+    Mirrors how the real `run_training` wires `on_model_start`/`on_model_end` around
+    each `create_model`: a fake `train_fn` grabs the active stream writer and emits the
+    paired lifecycle events, proving both flow out through `graph.stream("custom")` with
+    their `index`/`total` intact.
     """
     from langgraph.config import get_stream_writer
 
@@ -201,10 +202,15 @@ def test_model_trained_events_stream_from_the_trainer(tmp_path, monkeypatch):
         def complete(self, messages, **kwargs) -> str:
             return "Report: fine."
 
+    candidates = [("Extra Trees Regressor", 17.1), ("LightGBM", 18.4)]
+
     def train_fn(config):
         writer = get_stream_writer()
-        for name, rmse in [("Extra Trees Regressor", 17.1), ("LightGBM", 18.4)]:
-            writer({"type": "model_trained", "name": name, "cv_metrics": {"rmse": rmse}})
+        total = len(candidates)
+        for index, (name, rmse) in enumerate(candidates, start=1):
+            writer({"type": "model_training", "name": name, "index": index, "total": total})
+            writer({"type": "model_trained", "name": name, "index": index, "total": total,
+                     "cv_metrics": {"rmse": rmse}})
         return _fake_run()
 
     monkeypatch.setattr(monitor, "load_predict", lambda model_path: (lambda f: [50.0] * len(f)))
@@ -226,6 +232,13 @@ def test_model_trained_events_stream_from_the_trainer(tmp_path, monkeypatch):
         if mode == "custom":
             events.append(chunk)
 
+    # Every candidate announces a start before its finish, and both carry index/total.
+    starts = [e for e in events if e.get("type") == "model_training"]
     trained = [e for e in events if e.get("type") == "model_trained"]
+    assert [e["name"] for e in starts] == ["Extra Trees Regressor", "LightGBM"]
     assert [e["name"] for e in trained] == ["Extra Trees Regressor", "LightGBM"]
+    assert (starts[0]["index"], starts[0]["total"]) == (1, 2)
+    assert (trained[1]["index"], trained[1]["total"]) == (2, 2)
     assert trained[0]["cv_metrics"]["rmse"] == 17.1
+    # The start event for a model must precede its trained event in the stream.
+    assert events.index(starts[0]) < events.index(trained[0])

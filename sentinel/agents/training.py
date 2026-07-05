@@ -87,25 +87,31 @@ class TrainingRun:
         }
 
 
-def _model_progress() -> "Callable[[str, dict], None]":
-    """Build an `on_model(name, cv_metrics)` that streams one event per trained model.
+def _model_callbacks():
+    """Build `(on_model_start, on_model_end)` that stream one event per model lifecycle edge.
 
-    Uses the graph's active stream writer so each model PyCaret finishes surfaces
-    as a `model_trained` custom event (the long comparison is otherwise silent).
-    Degrades to a no-op when there is no active stream (direct/CLI-less use), the
-    same seam the interviewer/trainer use for their custom events.
+    Each candidate model gets a `model_training` event when PyCaret starts it and a
+    `model_trained` event (plus its CV metrics) when it finishes; both carry `index`
+    and `total` so a client can render "3 of 11" and a progress bar. The start event
+    is what keeps the UI from looking stuck during a model's slow cross-validation.
+
+    Uses the graph's active stream writer; degrades to a no-op pair when there is no
+    active stream (direct/CLI-less use), the same seam the interviewer/trainer use.
     """
     try:
         from langgraph.config import get_stream_writer
 
         writer = get_stream_writer()
     except Exception:  # noqa: BLE001 - no active stream context; run silently
-        return lambda name, metrics: None
+        return (lambda name, index, total: None), (lambda name, index, total, metrics: None)
 
-    def on_model(name: str, cv_metrics: dict) -> None:
-        writer({"type": "model_trained", "name": name, "cv_metrics": cv_metrics})
+    def on_model_start(name: str, index: int, total: int) -> None:
+        writer({"type": "model_training", "name": name, "index": index, "total": total})
 
-    return on_model
+    def on_model_end(name: str, index: int, total: int, cv_metrics: dict) -> None:
+        writer({"type": "model_trained", "name": name, "index": index, "total": total, "cv_metrics": cv_metrics})
+
+    return on_model_start, on_model_end
 
 
 def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir: str = "artifacts") -> TrainingRun:
@@ -118,13 +124,15 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
     test_feat = features.build_features(ds.test, keep, window=config.window)
     test_eval = data.build_test_eval(test_feat, ds.rul_truth, rul_cap=config.rul_cap)
 
+    on_model_start, on_model_end = _model_callbacks()
     result = automl.train_and_evaluate(
         train_feat,
         target="RUL",
         test_df=test_eval,
         artifacts_dir=artifacts_dir,
         ignore_features=["unit", "cycle"],
-        on_model=_model_progress(),
+        on_model_start=on_model_start,
+        on_model_end=on_model_end,
     )
 
     # Load the persisted preprocessing+model pipeline so the monitor can predict

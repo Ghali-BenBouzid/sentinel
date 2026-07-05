@@ -149,10 +149,12 @@ It uses the same provider config as the CLI (`SENTINEL_LLM_PROVIDER` + your key 
 `artifacts/tickets/`.
 
 The SSE events a stream can carry: `prompt` (a question awaiting an answer),
-`notify` (a status or applied-default line), `training` (`phase` started/finished),
-`model_trained` (one per candidate model the trainer finishes, with its cross-validated
-`cv_metrics` - so the long model comparison reports progress instead of going silent),
-`report` (the final report text), `done` (terminal), and `error`.
+`notify` (a status or applied-default line), `training` (`phase` started/finished for
+the whole comparison), `model_training` (one when the trainer *starts* a candidate
+model) and `model_trained` (one when it *finishes*, with its cross-validated
+`cv_metrics`) - both carry `index`/`total` (e.g. "3 of 11") so the long model
+comparison shows live per-model progress instead of going silent, `report` (the final
+report text), `done` (terminal), and `error`.
 
 **Testing the streaming endpoints: use `curl -N` or a browser `EventSource`, not
 Swagger `/docs`.** Swagger buffers the entire `text/event-stream` and only renders it
