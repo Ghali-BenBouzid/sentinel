@@ -21,10 +21,13 @@ Two behaviours are modelled on Cognireply's persona interviewer:
   asking cold, and the user accepts or corrects in one turn. Deductions are
   confidence-gated (`DEDUCE_CONFIDENCE`) and grounded - a guess just asks normally.
 
-Each bot message is one `ask(prompt) -> str` call (return = the user's reply), so
-the node runs interactively, unattended with scripted replies in the demo, and
-offline in tests with a fake `ask`. `provider_smart` drives the conversation; a
-final closing line, if any, goes through the injected `notify`.
+The state machine is pure: `start_progress()`/`advance()` carry the whole
+conversation in an `InterviewProgress` dict so it can be checkpointed between
+turns. The graph node `interviewer_turn` does exactly one `interrupt(next_prompt)`
+per invocation (suspend, then resume with the user's reply into a single
+`advance` classifier call) and loops back to itself until `phase == "done"`;
+applied-default and ack lines stream out through the LangGraph stream writer.
+`provider_smart` drives the conversation.
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+
+from langgraph.types import interrupt
 
 from ..llm.provider import Provider
 from . import domain_context
@@ -183,15 +188,6 @@ class Turn:
     deduced: list[dict] = dataclass_field(default_factory=list)
 
 
-@dataclass
-class FieldOutcome:
-    """Result of resolving one field: its value + the ack, or a global short-circuit."""
-
-    value: object = None
-    ack: str = ""
-    short_circuit: bool = False
-
-
 def classify_gate(reply: str, provider: Provider) -> bool:
     """Return True only if the user clearly wants the all-defaults shortcut."""
     raw = provider.complete(
@@ -240,93 +236,6 @@ def _absorb_deductions(deduced: dict, proposals: list[dict], active: str, resolv
         value = _coerce(key, p.get("value")) if key == "failure_threshold" else p.get("value")
         if conf >= DEDUCE_CONFIDENCE and value not in (None, ""):
             deduced[key] = value  # latest confident deduction wins
-
-
-def _resolve_field(field, question, ask, provider, history, preamble, deduced, resolved) -> FieldOutcome:
-    """Converse until `field` is resolved; return its value + closing ack (or a
-    short-circuit if the user asks for all-defaults). Confirms a deduced value
-    instead of asking cold, and absorbs new deductions for later fields."""
-    default = DEFAULTS[field]
-    ded_value = deduced.get(field)
-
-    if ded_value is not None:
-        opening_body = _CONFIRM[field].format(v=ded_value)
-    else:
-        opening_body = question
-    opening = f"{preamble}\n\n{opening_body}".strip() if preamble else opening_body
-    reply = ask(opening)
-    history += [f"Assistant: {opening}", f"User: {reply}"]
-
-    nonanswers = 0
-    while True:
-        turn = classify_turn(field, question, history, reply, ded_value, provider)
-        _absorb_deductions(deduced, turn.deduced, active=field, resolved=resolved)
-
-        if turn.classification == ALL_DEFAULTS:
-            return FieldOutcome(short_circuit=True)
-
-        if turn.classification == CLEAR:
-            value = _coerce(field, turn.value)
-            if value is None and ded_value is not None:
-                value = _coerce(field, ded_value)  # bare "yes" on a confirmation
-            if value is not None:
-                return FieldOutcome(value=value, ack=turn.reply)
-            turn.classification = UNCLEAR  # "clear" but unusable -> treat as non-answer
-
-        if turn.classification == WANTS_DEFAULT:
-            ack = turn.reply or f"Okay, I'll go with the default: {default}."
-            return FieldOutcome(value=default, ack=ack)
-
-        if turn.classification == QUESTION:
-            bot_msg = turn.reply or question  # answer + re-ask; not a failed answer
-        else:  # UNCLEAR
-            nonanswers += 1
-            if nonanswers >= MAX_NONANSWERS:
-                return FieldOutcome(value=default, ack=f"Let's not get stuck - I'll use the default of {default}.")
-            bot_msg = turn.reply or f"I need a clearer answer. {question}"
-
-        reply = ask(bot_msg)
-        history += [f"Assistant: {bot_msg}", f"User: {reply}"]
-
-
-def run_interview(ask, provider: Provider, notify=print) -> InterviewConfig:
-    """Drive the interview: offer the all-defaults escape, then converse field by field.
-
-    `ask(prompt) -> str` is the human channel (each call is one bot message);
-    `notify(str)` reports applied defaults and the closing line.
-    """
-    # Up-front fast path: offer to skip the whole interview with sensible defaults.
-    if classify_gate(ask(GATE_QUESTION), provider):
-        return _fill_defaults_and_finish({}, notify, opener="Great - using sensible defaults across the board:")
-
-    values: dict[str, object] = {}
-    deduced: dict[str, object] = {}
-    history: list[str] = []
-    preamble = ""
-    resolved: set[str] = set()
-
-    for field, question in QUESTIONS:
-        outcome = _resolve_field(field, question, ask, provider, history, preamble, deduced, resolved)
-        if outcome.short_circuit:
-            # Global "use defaults for everything" - fill this field + all the rest.
-            return _fill_defaults_and_finish(values, notify, opener="Okay - filling everything else with defaults:")
-        values[field] = outcome.value
-        resolved.add(field)
-        preamble = outcome.ack
-
-    if preamble:
-        notify(preamble)  # close on the last field's acknowledgement
-    return InterviewConfig(**values, **_EXTRA_DEFAULTS)
-
-
-def _fill_defaults_and_finish(values: dict, notify, opener: str) -> InterviewConfig:
-    """Fill every not-yet-answered asked field with its default, announcing each."""
-    defaulted = [f for f in _ASKED_FIELDS if f not in values]
-    notify(opener)
-    for field in defaulted:
-        notify(f"  - {_DEFAULT_LINE[field]}")
-        values[field] = DEFAULTS[field]
-    return InterviewConfig(**values, **_EXTRA_DEFAULTS)
 
 
 def _coerce(field: str, value: object) -> object | None:
@@ -452,16 +361,40 @@ def advance(progress: InterviewProgress, reply: str, provider: Provider) -> Inte
     return p
 
 
-def interviewer_node(state: AgentState, config) -> dict:
-    """Graph node: run the conversational interview, emit the collected config."""
-    cfg = config["configurable"]
-    ask = cfg["ask"]
-    provider = cfg["provider_smart"]
-    notify = cfg.get("notify", print)
+def _get_writer():
+    """The active LangGraph stream writer, or a no-op when there's no stream
+    (e.g. `graph.invoke` in tests) so streaming notices never crash the node."""
+    from langgraph.config import get_stream_writer
 
-    interview_config = run_interview(ask, provider, notify)
-    return {
-        "config": interview_config,
-        "event": "interview_done",
-        "log": append_log(state, f"interviewer: collected config {interview_config}"),
+    try:
+        return get_stream_writer()
+    except Exception:  # noqa: BLE001 - no active stream context
+        return lambda _e: None
+
+
+def interviewer_turn(state: AgentState, config) -> dict:
+    """One question/answer round of the interview, then loop back to self.
+
+    Does exactly ONE `interrupt()` per invocation: it suspends on the current
+    prompt and, on resume, receives the user's reply and makes the single
+    classifier call in `advance`. Because each turn is its own invocation,
+    resuming re-executes only THIS turn - earlier turns are never replayed.
+    """
+    provider = config["configurable"]["provider_smart"]
+    progress = state.get("interview") or start_progress()
+
+    reply = interrupt(progress["next_prompt"])  # suspends; returns the saved reply on resume
+    progress = advance(progress, reply, provider)
+
+    writer = _get_writer()
+    for line in progress.get("notices", []):
+        writer({"type": "notify", "text": line})
+
+    out = {
+        "interview": progress,
+        "log": append_log(state, "interviewer: turn"),
     }
+    if progress["phase"] == "done":
+        out["config"] = progress["config"]
+        out["event"] = "interview_done"
+    return out

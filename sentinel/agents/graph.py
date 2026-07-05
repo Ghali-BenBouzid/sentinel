@@ -21,15 +21,15 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from .interviewer import interviewer_node
+from .interviewer import interviewer_turn
 from .monitor import monitor_node
 from .report_writer import report_writer_node
 from .state import AgentState, append_log
 
 # event -> next node. `None`/"start" means "no config yet, go interview".
 _ROUTES = {
-    None: "interviewer",
-    "start": "interviewer",
+    None: "interviewer_turn",
+    "start": "interviewer_turn",
     "interview_done": "trainer",
     "run_finished": "report_writer",
     "run_failed": "report_writer",
@@ -68,19 +68,49 @@ def trainer_node(state: AgentState, config) -> dict:
     return {"train_run": run, "event": "run_finished", "log": append_log(state, line)}
 
 
-def build_graph():
-    """Assemble and compile the StateGraph. Dependencies come in via config."""
+def route_interview(state: AgentState) -> str:
+    """Self-loop the interviewer until the interview is done, then hand back to the hub."""
+    return "orchestrator" if (state.get("interview") or {}).get("phase") == "done" else "interviewer_turn"
+
+
+def build_graph(checkpointer=None):
+    """Assemble and compile the resumable StateGraph. Dependencies come in via config.
+
+    A checkpointer is required for `interrupt()`-driven resumability; tests pass a
+    `MemorySaver`, and the default is an app-lifetime `SqliteSaver` on disk.
+    """
     graph = StateGraph(AgentState)
     graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("interviewer", interviewer_node)
+    graph.add_node("interviewer_turn", interviewer_turn)
     graph.add_node("trainer", trainer_node)
     graph.add_node("report_writer", report_writer_node)
     graph.add_node("monitor", monitor_node)
 
     graph.add_edge(START, "orchestrator")
     graph.add_conditional_edges("orchestrator", route)
-    # Every sub-agent reports back to the hub, which re-routes on the new event.
-    for node in ("interviewer", "trainer", "report_writer", "monitor"):
+    # The interviewer loops to itself (one interrupt/turn) until done, then hub.
+    graph.add_conditional_edges("interviewer_turn", route_interview)
+    # The other sub-agents report straight back to the hub.
+    for node in ("trainer", "report_writer", "monitor"):
         graph.add_edge(node, "orchestrator")
 
-    return graph.compile()
+    if checkpointer is None:
+        checkpointer = _default_checkpointer()
+    return graph.compile(checkpointer=checkpointer)
+
+
+def _default_checkpointer():
+    """App-lifetime SqliteSaver on the configured path.
+
+    `SqliteSaver.from_conn_string` is a context manager that closes its connection
+    on exit; we want a connection that lives as long as the process, so we open it
+    directly (exactly what `from_conn_string` does internally, minus the close).
+    """
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    from ..config import get_settings
+
+    conn = sqlite3.connect(get_settings().checkpoint_db_path, check_same_thread=False)
+    return SqliteSaver(conn)

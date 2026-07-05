@@ -1,3 +1,6 @@
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
+
 from sentinel.agents import interviewer as iv
 from sentinel.agents.state import InterviewConfig
 
@@ -76,3 +79,36 @@ def test_unclear_builds_to_max_nonanswers_then_defaults():
         prog = iv.advance(prog, "dunno", OneShotProvider([unclear]))
     assert prog["values"]["framing"] == iv.DEFAULTS["framing"]  # fell back to default
     assert prog["active_index"] == 1  # advanced past the stuck field
+
+
+def test_graph_interview_one_llm_call_per_turn():
+    """The load-bearing replay-safety check: driving the compiled graph one
+    interrupt at a time makes EXACTLY one classifier call per delivered answer.
+    A replay of earlier turns would inflate p.calls past 5 - this proves it doesn't."""
+    from sentinel.agents.graph import build_graph
+
+    # gate declines, then one CLEAR answer per field.
+    scripted = ['{"all_defaults": false}'] + [
+        '{"classification":"CLEAR","reply":"ok","value":"x","deduced":[]}',
+        '{"classification":"CLEAR","reply":"ok","value":25,"deduced":[]}',
+        '{"classification":"CLEAR","reply":"ok","value":"daily","deduced":[]}',
+        '{"classification":"CLEAR","reply":"ok","value":"rmse<20","deduced":[]}',
+    ]
+    p = OneShotProvider(scripted)
+    cfg = {
+        "provider_smart": p,
+        "provider_cheap": p,
+        "train_fn": lambda c: (_ for _ in ()).throw(AssertionError("no train")),
+        "ticket_dir": "artifacts/tickets",
+    }
+    graph = build_graph(checkpointer=MemorySaver())
+    # Only run the interview leg: stop once the interview is done (no pending task).
+    thread = {"configurable": {**cfg, "thread_id": "t1"}}
+    graph.invoke({"event": "start"}, thread)
+    for a in ["no", "x", "25", "daily", "rmse<20"]:
+        st = graph.get_state(thread)
+        if not st.tasks:
+            break
+        graph.invoke(Command(resume=a), thread)
+    # One classifier call per delivered answer (gate + 4 fields) - NO replay.
+    assert p.calls == 5
