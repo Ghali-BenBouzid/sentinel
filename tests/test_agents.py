@@ -261,7 +261,7 @@ def test_deduced_field_is_confirmed_not_asked_cold():
     assert prog["values"]["failure_threshold"] == 25
 
 
-def test_run_interview_offers_gate_then_walks_fields_and_carries_acks():
+def test_advance_offers_gate_then_walks_fields_and_carries_acks():
     # Gate declined -> normal conversation, one turn per field.
     provider = QueueProvider(
         [

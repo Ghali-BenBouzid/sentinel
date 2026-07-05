@@ -36,6 +36,8 @@ sentinel/
     domain_context.py # extensible glossary (datasets/metrics) injected into the prompts
     training.py      # thin wrapper that runs the M1 DS core from an InterviewConfig
     __main__.py      # end-to-end runnable: interview -> train -> report -> monitor
+  api/
+    app.py           # FastAPI/SSE surface over the resumable graph (create_app)
 tests/
   test_core_helpers.py   # fast offline unit tests for the pure DS-core helpers
   test_agents.py         # fast offline tests for the agent layer (faked LLM + training)
@@ -128,21 +130,23 @@ prints the report and any monitor alerts, and writes mock maintenance tickets to
 `artifacts/tickets/`. Training reuses the M1 pipeline, so it downloads/caches
 FD001 and runs PyCaret exactly as `python -m sentinel.pipeline` does.
 
-### Run the demo dashboard
+### Run the API
 
-A Streamlit dashboard runs the whole agent graph in the browser - chat through the
-interview, watch PyCaret train live, read the report, and step through the monitor's
-alerts and filed tickets. Streamlit is an optional extra (kept out of the core deps):
+The graph is resumable (LangGraph `interrupt()` + a checkpointer), so it can be driven
+over HTTP one request per turn instead of one long-lived process. `sentinel/api/app.py`
+exposes it as a FastAPI/SSE surface:
 
 ```bash
-uv sync --extra dashboard
-uv run streamlit run sentinel/dashboard/app.py
+uv run uvicorn "sentinel.api.app:create_app" --factory
 ```
 
+`POST /sessions` starts a new session and streams notify/report/prompt events (SSE) up
+to the first interrupt; `POST /sessions/{id}/resume` posts one answer (`{"answer": "..."}`)
+and streams on to the next interrupt or to done; `GET /sessions/{id}` reads a snapshot
+straight from the checkpointer, so a client can reconnect after losing the SSE stream.
 It uses the same provider config as the CLI (`SENTINEL_LLM_PROVIDER` + your key from
 `.env`), runs the real graph end to end, and writes the same mock tickets to
-`artifacts/tickets/`. Training runs PyCaret live, so the training step takes a few
-minutes - the dashboard shows a live status while it compares model families.
+`artifacts/tickets/`.
 
 ## Tests, lint, and CI
 
