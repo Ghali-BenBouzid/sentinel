@@ -34,6 +34,21 @@ class InterviewConfig:
     window: int = 5  # DS-core knob: rolling-feature window
 
 
+class InterviewProgress(TypedDict, total=False):
+    """Per-turn interview state the graph checkpoints between interviewer turns."""
+
+    phase: str  # "gate" | "field" | "done"
+    active_index: int  # index into interviewer.QUESTIONS
+    values: dict  # resolved field -> value
+    deduced: dict  # field -> confidently-deduced value awaiting confirmation
+    resolved: list  # fields already resolved (order-independent)
+    history: list  # "Assistant: ..."/"User: ..." lines for LLM context
+    next_prompt: str  # the message to interrupt() with on the next turn
+    nonanswers: int  # consecutive non-answers on the active field
+    notices: list  # applied-default / ack lines to stream this turn
+    config: object  # the finished InterviewConfig once phase == "done"
+
+
 class AgentState(TypedDict, total=False):
     """Everything the graph passes between nodes.
 
@@ -44,6 +59,7 @@ class AgentState(TypedDict, total=False):
 
     event: str  # significant event driving routing (interview_done, run_finished, ...)
     config: InterviewConfig  # produced by the interviewer
+    interview: InterviewProgress  # checkpointed per-turn interview state
     train_run: Any  # `training.TrainingRun` bundle produced by the trainer
     report: str  # produced by the report writer
     alerts: list[dict]  # produced by the monitor (one entry per alert/report)

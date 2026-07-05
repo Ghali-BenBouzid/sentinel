@@ -35,7 +35,7 @@ from dataclasses import field as dataclass_field
 
 from ..llm.provider import Provider
 from . import domain_context
-from .state import AgentState, InterviewConfig, append_log
+from .state import AgentState, InterviewConfig, InterviewProgress, append_log
 
 # The agenda. The code owns this ordered list; the LLM never reorders or adds to it.
 QUESTIONS: list[tuple[str, str]] = [
@@ -349,6 +349,105 @@ def _parse_json_object(text: str) -> dict:
         return json.loads(text[start : end + 1])
     except (ValueError, TypeError):
         return {}
+
+
+def start_progress() -> InterviewProgress:
+    """The initial per-turn state: the gate question, nothing resolved yet."""
+    return {
+        "phase": "gate",
+        "active_index": 0,
+        "values": {},
+        "deduced": {},
+        "resolved": [],
+        "history": [],
+        "next_prompt": GATE_QUESTION,
+        "nonanswers": 0,
+        "notices": [],
+        "config": None,
+    }
+
+
+def _finish(values: dict, notices: list, opener: str) -> InterviewProgress:
+    """Fill every unanswered asked field with its default, recording announcements."""
+    notices.append(opener)
+    for f in _ASKED_FIELDS:
+        if f not in values:
+            notices.append(f"  - {_DEFAULT_LINE[f]}")
+            values[f] = DEFAULTS[f]
+    return {
+        "phase": "done",
+        "notices": notices,
+        "config": InterviewConfig(**values, **_EXTRA_DEFAULTS),
+    }
+
+
+def _prompt_for(field: str, question: str, deduced: dict, preamble: str) -> str:
+    """The next bot message for `field`: confirm a deduced value, or ask cold."""
+    body = _CONFIRM[field].format(v=deduced[field]) if deduced.get(field) is not None else question
+    return f"{preamble}\n\n{body}".strip() if preamble else body
+
+
+def advance(progress: InterviewProgress, reply: str, provider: Provider) -> InterviewProgress:
+    """Consume one user reply; return the next InterviewProgress. One LLM call/turn."""
+    p = {**progress, "notices": []}  # notices are per-turn
+
+    if p["phase"] == "gate":
+        if classify_gate(reply, provider):
+            return _finish(
+                p["values"], p["notices"], "Great - using sensible defaults across the board:"
+            )
+        p["phase"] = "field"
+        field, question = QUESTIONS[0]
+        p["next_prompt"] = _prompt_for(field, question, p["deduced"], "")
+        return p
+
+    field, question = QUESTIONS[p["active_index"]]
+    ded_value = p["deduced"].get(field)
+    p["history"] = [*p["history"], f"Assistant: {p['next_prompt']}", f"User: {reply}"]
+    turn = classify_turn(field, question, p["history"], reply, ded_value, provider)
+    _absorb_deductions(p["deduced"], turn.deduced, active=field, resolved=set(p["resolved"]))
+
+    if turn.classification == ALL_DEFAULTS:
+        return _finish(p["values"], p["notices"], "Okay - filling everything else with defaults:")
+
+    ack = ""
+    if turn.classification == CLEAR:
+        value = _coerce(field, turn.value)
+        if value is None and ded_value is not None:
+            value = _coerce(field, ded_value)
+        if value is not None:
+            p["values"][field] = value
+            ack = turn.reply
+        else:
+            turn.classification = UNCLEAR
+    if turn.classification == WANTS_DEFAULT:
+        p["values"][field] = DEFAULTS[field]
+        ack = turn.reply or f"Okay, I'll go with the default: {DEFAULTS[field]}."
+    if turn.classification == QUESTION:
+        p["next_prompt"] = turn.reply or question  # re-ask same field, no advance
+        return p
+    if turn.classification == UNCLEAR:
+        p["nonanswers"] += 1
+        if p["nonanswers"] < MAX_NONANSWERS:
+            p["next_prompt"] = turn.reply or f"I need a clearer answer. {question}"
+            return p
+        p["values"][field] = DEFAULTS[field]
+        ack = f"Let's not get stuck - I'll use the default of {DEFAULTS[field]}."
+
+    # field resolved -> advance
+    p["resolved"] = [*p["resolved"], field]
+    p["nonanswers"] = 0
+    nxt = p["active_index"] + 1
+    if nxt >= len(QUESTIONS):
+        if ack:
+            p["notices"] = [*p["notices"], ack]
+        p["phase"] = "done"
+        p["config"] = InterviewConfig(**p["values"], **_EXTRA_DEFAULTS)
+        return p
+    p["active_index"] = nxt
+    nf, nq = QUESTIONS[nxt]
+    p["next_prompt"] = _prompt_for(nf, nq, p["deduced"], ack)
+    return p
 
 
 def interviewer_node(state: AgentState, config) -> dict:
