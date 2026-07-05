@@ -191,7 +191,7 @@ def test_model_lifecycle_events_stream_from_the_trainer(tmp_path, monkeypatch):
     """
     from langgraph.config import get_stream_writer
 
-    from sentinel.agents import monitor
+    from sentinel.agents import monitor, training
     from sentinel.agents.graph import build_graph
 
     class GateProvider:
@@ -206,11 +206,14 @@ def test_model_lifecycle_events_stream_from_the_trainer(tmp_path, monkeypatch):
 
     def train_fn(config):
         writer = get_stream_writer()
+        writer(training._stage_event("loading_data"))
         total = len(candidates)
         for index, (name, rmse) in enumerate(candidates, start=1):
             writer({"type": "model_training", "name": name, "index": index, "total": total})
             writer({"type": "model_trained", "name": name, "index": index, "total": total,
                      "cv_metrics": {"rmse": rmse}})
+        writer(training._stage_event("winner_selected", "Extra Trees Regressor"))
+        writer(training._stage_event("saving"))
         return _fake_run()
 
     monkeypatch.setattr(monitor, "load_predict", lambda model_path: (lambda f: [50.0] * len(f)))
@@ -242,3 +245,23 @@ def test_model_lifecycle_events_stream_from_the_trainer(tmp_path, monkeypatch):
     assert trained[0]["cv_metrics"]["rmse"] == 17.1
     # The start event for a model must precede its trained event in the stream.
     assert events.index(starts[0]) < events.index(trained[0])
+
+    # Coarse stage events bracket the loop: loading_data before, winner/save after.
+    stages = [e["stage"] for e in events if e.get("type") == "stage"]
+    assert stages == ["loading_data", "winner_selected", "saving"]
+    winner = next(e for e in events if e.get("stage") == "winner_selected")
+    assert winner["detail"] == "Extra Trees Regressor" and "Extra Trees Regressor" in winner["text"]
+
+
+def test_stage_event_shape_and_detail_interpolation():
+    from sentinel.agents.training import _stage_event
+
+    plain = _stage_event("evaluating")
+    assert plain == {"type": "stage", "stage": "evaluating",
+                     "text": "Evaluating the winning model on the held-out test set ..."}
+    assert "detail" not in plain  # no detail -> no echoed field
+
+    withdetail = _stage_event("winner_selected", "Extra Trees Regressor")
+    assert withdetail["stage"] == "winner_selected"
+    assert withdetail["detail"] == "Extra Trees Regressor"
+    assert "Extra Trees Regressor" in withdetail["text"]  # interpolated into the human line

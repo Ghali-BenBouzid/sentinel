@@ -78,6 +78,7 @@ def train_and_evaluate(
     fold: int = 3,
     on_model_start: Callable[[str, int, int], None] | None = None,
     on_model_end: Callable[[str, int, int, dict], None] | None = None,
+    on_stage: Callable[..., None] | None = None,
 ) -> TrainResult:
     """Set up PyCaret, train each candidate model, finalize the best, evaluate + persist.
 
@@ -89,9 +90,15 @@ def train_and_evaluate(
       model is trained, `on_model_end(name, index, total, cv_metrics)` right after.
       `index` is 1-based, `total` is the candidate count. Selection is still by
       cross-validated RMSE - identical winner to `compare_models(sort="RMSE")`.
+    - `on_stage(stage, detail="")` marks the coarse phases around the model loop
+      (`winner_selected` with the winner's name, `evaluating`, `saving`) so the
+      seconds between the last model and the finished run are not silent.
     - Evaluation is on `test_df` (the real FD001 test set), not just CV folds.
     - Saves the finalized model and a `metrics.json` under `artifacts_dir`.
     """
+    def _stage(name: str, detail: str = "") -> None:
+        if on_stage is not None:
+            on_stage(name, detail)
     artifacts_dir = Path(artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     ignore_features = ignore_features or []
@@ -128,15 +135,18 @@ def train_and_evaluate(
                 {"rmse": cv_metrics.get("RMSE"), "mae": cv_metrics.get("MAE"), "r2": cv_metrics.get("R2")},
             )
 
-    leaderboard, best_model, _ = _rank_models(results)
+    leaderboard, best_model, best_name = _rank_models(results)
 
+    _stage("winner_selected", best_name)
     final_model = finalize_model(best_model)  # refit on the full training data
 
     # Held-out evaluation on the real FD001 test set.
+    _stage("evaluating")
     preds = predict_model(final_model, data=test_df)
     y_pred = preds["prediction_label"] if "prediction_label" in preds else preds.iloc[:, -1]
     metrics = _regression_metrics(test_df[target], y_pred)
 
+    _stage("saving")
     model_path = artifacts_dir / "rul_model"
     save_model(final_model, str(model_path))  # writes rul_model.pkl
 

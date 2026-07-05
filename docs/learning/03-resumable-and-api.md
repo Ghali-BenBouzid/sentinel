@@ -412,6 +412,20 @@ The DS core stays pure and independently testable (the winner-selection logic is
 client with no change to `_run` - because, again, `_run` forwards any `type` field as
 its own SSE event.
 
+The per-model loop is the *long* silence, but not the only one: loading and featurizing
+the dataset (before PyCaret's `setup()`), and refitting/evaluating/saving the winner
+(after the last model), are each a few seconds with nothing to say.
+So a third hook, `on_stage(stage, detail="")`, marks those coarse phases -
+`loading_data`, `winner_selected` (carrying the winner's name), `evaluating`, `saving`,
+`loading_model` - and the bridge turns each into a `stage` event with a machine-readable
+`stage` id plus a human `text` (`_stage_event` builds it; it is a pure function with its
+own test, so the wording is checked without running PyCaret).
+Same separation as the metrics: the DS core emits a semantic id, the agent-layer bridge
+owns the human phrasing.
+The result is that from "training started" to "training finished" there is always
+something on the wire within a second or two - a stage line, a model starting, or a
+model finishing - so a client never has to guess whether the run is alive.
+
 ### Watch out: you cannot see SSE in Swagger `/docs`
 
 A real debugging story worth internalizing.

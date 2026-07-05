@@ -87,15 +87,41 @@ class TrainingRun:
         }
 
 
-def _model_callbacks():
-    """Build `(on_model_start, on_model_end)` that stream one event per model lifecycle edge.
+# Human-facing text for each coarse training stage. `{detail}` (if present) is
+# filled from the stage's detail arg (e.g. the winning model's name).
+_STAGE_TEXT = {
+    "loading_data": "Loading and preparing the FD001 dataset ...",
+    "winner_selected": "Winner selected: {detail} - refitting it on all the training data ...",
+    "evaluating": "Evaluating the winning model on the held-out test set ...",
+    "saving": "Saving the trained model ...",
+    "loading_model": "Loading the saved model to hand to the monitor ...",
+}
+
+
+def _stage_event(stage: str, detail: str = "") -> dict:
+    """Build the `stage` custom event for one coarse training phase (pure).
+
+    Carries a machine-readable `stage` id and a human `text`, so a client can drive
+    a stepper or just show the line. `detail` (e.g. the winner name) is interpolated
+    into the text and echoed as a field when present.
+    """
+    text = _STAGE_TEXT[stage].format(detail=detail)
+    event = {"type": "stage", "stage": stage, "text": text}
+    if detail:
+        event["detail"] = detail
+    return event
+
+
+def _training_stream():
+    """Build `(on_model_start, on_model_end, on_stage)` bound to the active stream writer.
 
     Each candidate model gets a `model_training` event when PyCaret starts it and a
     `model_trained` event (plus its CV metrics) when it finishes; both carry `index`
-    and `total` so a client can render "3 of 11" and a progress bar. The start event
-    is what keeps the UI from looking stuck during a model's slow cross-validation.
+    and `total` so a client can render "3 of 11" and a progress bar. `on_stage` emits
+    the coarse `stage` events around the loop (data load, winner, evaluation, save,
+    model load) so the seconds outside the loop are not silent either.
 
-    Uses the graph's active stream writer; degrades to a no-op pair when there is no
+    Uses the graph's active stream writer; degrades to no-op hooks when there is no
     active stream (direct/CLI-less use), the same seam the interviewer/trainer use.
     """
     try:
@@ -103,7 +129,7 @@ def _model_callbacks():
 
         writer = get_stream_writer()
     except Exception:  # noqa: BLE001 - no active stream context; run silently
-        return (lambda name, index, total: None), (lambda name, index, total, metrics: None)
+        return (lambda *a: None), (lambda *a: None), (lambda *a: None)
 
     def on_model_start(name: str, index: int, total: int) -> None:
         writer({"type": "model_training", "name": name, "index": index, "total": total})
@@ -111,12 +137,18 @@ def _model_callbacks():
     def on_model_end(name: str, index: int, total: int, cv_metrics: dict) -> None:
         writer({"type": "model_trained", "name": name, "index": index, "total": total, "cv_metrics": cv_metrics})
 
-    return on_model_start, on_model_end
+    def on_stage(stage: str, detail: str = "") -> None:
+        writer(_stage_event(stage, detail))
+
+    return on_model_start, on_model_end, on_stage
 
 
 def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir: str = "artifacts") -> TrainingRun:
     """Load FD001, featurize, train/evaluate, and build a prediction function."""
+    on_model_start, on_model_end, on_stage = _training_stream()
+
     set_seeds()
+    on_stage("loading_data")
     ds = data.load_fd001(data_dir=data_dir, rul_cap=config.rul_cap)
 
     keep = features.informative_sensors(ds.train)
@@ -124,7 +156,6 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
     test_feat = features.build_features(ds.test, keep, window=config.window)
     test_eval = data.build_test_eval(test_feat, ds.rul_truth, rul_cap=config.rul_cap)
 
-    on_model_start, on_model_end = _model_callbacks()
     result = automl.train_and_evaluate(
         train_feat,
         target="RUL",
@@ -133,10 +164,12 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
         ignore_features=["unit", "cycle"],
         on_model_start=on_model_start,
         on_model_end=on_model_end,
+        on_stage=on_stage,
     )
 
     # Load the persisted preprocessing+model pipeline so the monitor can predict
     # standalone, without re-entering the PyCaret experiment context.
+    on_stage("loading_model")
     predict = load_predict(str(result.model_path))
 
     return TrainingRun(result=result, test_eval=test_eval, predict=predict)
