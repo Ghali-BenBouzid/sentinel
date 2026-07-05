@@ -42,6 +42,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
     )
 
+    # SQLite file the LangGraph checkpointer persists resumable run state to.
+    checkpoint_db_path: str = "artifacts/sentinel-checkpoints.sqlite"
+
 
 @lru_cache
 def get_settings() -> Settings:

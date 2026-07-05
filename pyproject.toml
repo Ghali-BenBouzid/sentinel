@@ -15,11 +15,10 @@ dependencies = [
     "anthropic>=0.116.0",
     "groq>=1.5.0",
     "pydantic-settings>=2.14.2",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "langgraph-checkpoint-sqlite>=2.0",
 ]
-
-[project.optional-dependencies]
-# The demo dashboard only - kept out of the core deps so `uv sync` and CI stay lean.
-dashboard = ["streamlit>=1.40"]
 
 [build-system]
 requires = ["hatchling"]
@@ -32,6 +31,7 @@ packages = ["sentinel"]
 dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.20",
+    "httpx>=0.28",
 ]
 
 [tool.ruff]

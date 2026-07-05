@@ -75,6 +75,12 @@ Two design points worth internalizing:
   at to decide what happens next (section 4). Everything else is a by-product a
   sub-agent produced.
 
+> **Superseded in V1.** `train_run: Any` above (the live `TrainingRun` bundle) does
+> not survive a real checkpointer - LangGraph 1.2.7 serializes the whole state after
+> every node with no pickle fallback, so a closure/DataFrame/estimator crashes it.
+> V1 replaced it with `train_state: dict`, a checkpoint-safe reduction produced by
+> `TrainingRun.to_state()`. See `docs/learning/03-resumable-and-api.md` section 3.
+
 ---
 
 ## 3. Why these four sub-agents (five nodes)
@@ -85,6 +91,15 @@ one concern the others don't touch:
 - **Interviewer** (`interviewer.py`) - the *only* human-facing node. It turns a
   conversation into an `InterviewConfig`. Nothing else in the graph talks to a
   person.
+  > **Superseded in V1.** The blocking `ask()`/`notify()` loop described just below
+  > (and every `ask(prompt) -> str` call mentioned in this section) was replaced by
+  > a self-looping graph node (`interviewer_turn`) built on LangGraph `interrupt()`
+  > and a checkpointer, so the interview is resumable across independent HTTP
+  > requests instead of blocking one thread for the whole conversation.
+  > The turn-by-turn agenda, the five classifications, the all-defaults gate, and
+  > deduction all carry over unchanged - only the suspend/resume mechanics moved.
+  > See `docs/learning/03-resumable-and-api.md`, especially section 2 (the replay
+  > gotcha this rework exists to avoid).
 - **Report writer** (`report_writer.py`) - turns a finished run into prose. Pure
   output; it never trains or monitors.
 - **Monitor** (`monitor.py`) - replays held-out readings and decides

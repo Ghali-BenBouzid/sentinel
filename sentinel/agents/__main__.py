@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 
+from langgraph.types import Command
+
 from ..config import get_settings
 from ..llm.provider import get_provider
 from .graph import build_graph
@@ -36,39 +38,46 @@ SCRIPTED_ANSWERS = [
 ]
 
 
-def _scripted_ask():
-    answers = iter(SCRIPTED_ANSWERS)
-
-    def ask(question: str) -> str:
-        answer = next(answers, "")
-        print(f"  Q: {question}\n  A: {answer}")
-        return answer
-
-    return ask
-
-
-def main() -> None:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--interactive", action="store_true", help="answer the interview yourself instead of scripted"
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def main() -> None:
+    args = _parse_args()
     provider_name = get_settings().sentinel_llm_provider
     print(f"[agent] provider={provider_name} (set SENTINEL_LLM_PROVIDER in env or .env)\n")
 
-    ask = input if args.interactive else _scripted_ask()
     configurable = {
-        "ask": ask,
         "provider_smart": get_provider("smart"),
         "provider_cheap": get_provider("cheap"),
         "train_fn": run_training,
         "ticket_dir": "artifacts/tickets",
+        "thread_id": "cli",
     }
-
     graph = build_graph()
+    thread = {"configurable": configurable}
+    answers = None if args.interactive else iter(SCRIPTED_ANSWERS)
+
     print("[1/4] interview ...")
-    final = graph.invoke({"event": "start"}, config={"configurable": configurable})
+    inp = {"event": "start"}
+    while True:
+        for mode, chunk in graph.stream(inp, thread, stream_mode=["custom", "updates"]):
+            if mode == "custom":
+                print(f"  {chunk.get('text', chunk)}")
+        state = graph.get_state(thread)
+        if not state.tasks:  # no pending interrupt -> graph is done
+            break
+        prompt = state.tasks[0].interrupts[0].value
+        reply = input(prompt + "\n> ") if args.interactive else next(answers, "")
+        if not args.interactive:
+            print(f"  Q: {prompt}\n  A: {reply}")
+        inp = Command(resume=reply)
+
+    final = graph.get_state(thread).values
 
     print("\n===== REPORT =====")
     print(final.get("report", "(no report)"))

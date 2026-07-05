@@ -68,3 +68,8 @@ def test_env_overrides_dotenv(monkeypatch, tmp_path):
 
 def test_get_settings_is_cached():
     assert get_settings() is get_settings()
+
+
+def test_checkpoint_db_path_has_default():
+    get_settings.cache_clear()
+    assert get_settings().checkpoint_db_path.endswith(".sqlite")

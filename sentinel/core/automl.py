@@ -16,11 +16,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 from pycaret.regression import (
-    compare_models,
+    create_model,
     finalize_model,
+    models,
     predict_model,
     pull,
     save_model,
@@ -52,6 +54,19 @@ def _regression_metrics(y_true, y_pred) -> dict[str, float]:
     }
 
 
+def _rank_models(results: list[tuple[str, dict, object]]) -> tuple[pd.DataFrame, object, str]:
+    """Rank per-model CV results by RMSE (lower is better) and pick the winner.
+
+    `results` is one `(friendly_name, cv_metrics, fitted_model)` per trained model.
+    Returns the leaderboard frame (best first), the winning model, and its name.
+    Pure - no PyCaret - so the ranking that decides the winner is unit-testable.
+    """
+    ordered = sorted(results, key=lambda r: r[1]["RMSE"])
+    leaderboard = pd.DataFrame([{"Model": name, **metrics} for name, metrics, _ in ordered])
+    best_name, _, best_model = ordered[0]
+    return leaderboard, best_model, best_name
+
+
 def train_and_evaluate(
     train_df: pd.DataFrame,
     target: str,
@@ -61,14 +76,29 @@ def train_and_evaluate(
     include: list[str] | None = DEFAULT_MODELS,
     session_id: int = 42,
     fold: int = 3,
+    on_model_start: Callable[[str, int, int], None] | None = None,
+    on_model_end: Callable[[str, int, int, dict], None] | None = None,
+    on_stage: Callable[..., None] | None = None,
 ) -> TrainResult:
-    """Set up PyCaret, compare models, finalize the best, evaluate + persist.
+    """Set up PyCaret, train each candidate model, finalize the best, evaluate + persist.
 
     - `ignore_features`: kept in the frame but excluded from the model (e.g.
       the `unit` identifier and raw `cycle`).
+    - Each candidate is trained one at a time (`create_model`) rather than in a
+      single opaque `compare_models` call, so two PyTorch-style lifecycle hooks can
+      report progress: `on_model_start(name, index, total)` fires just before a
+      model is trained, `on_model_end(name, index, total, cv_metrics)` right after.
+      `index` is 1-based, `total` is the candidate count. Selection is still by
+      cross-validated RMSE - identical winner to `compare_models(sort="RMSE")`.
+    - `on_stage(stage, detail="")` marks the coarse phases around the model loop
+      (`winner_selected` with the winner's name, `evaluating`, `saving`) so the
+      seconds between the last model and the finished run are not silent.
     - Evaluation is on `test_df` (the real FD001 test set), not just CV folds.
     - Saves the finalized model and a `metrics.json` under `artifacts_dir`.
     """
+    def _stage(name: str, detail: str = "") -> None:
+        if on_stage is not None:
+            on_stage(name, detail)
     artifacts_dir = Path(artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     ignore_features = ignore_features or []
@@ -83,16 +113,40 @@ def train_and_evaluate(
         verbose=False,
     )
 
-    best_model = compare_models(include=include, sort="RMSE", verbose=False)
-    leaderboard = pull()
+    name_of = models()["Name"].to_dict()  # model id -> friendly name ("et" -> "Extra Trees Regressor")
+    candidate_ids = list(include) if include is not None else list(name_of)
 
+    results: list[tuple[str, dict, object]] = []
+    total = len(candidate_ids)
+    for index, model_id in enumerate(candidate_ids, start=1):
+        name = name_of.get(model_id, str(model_id))
+        if on_model_start is not None:
+            on_model_start(name, index, total)  # announce before the slow CV, so the UI isn't blank
+        try:
+            model = create_model(model_id, verbose=False)  # trains + cross-validates
+        except Exception:  # noqa: BLE001 - a single unavailable model must not sink the run
+            continue
+        mean = pull().loc["Mean"]  # fold-averaged CV metrics for this model
+        cv_metrics = {col: float(mean[col]) for col in mean.index if pd.notna(mean[col])}
+        results.append((name, cv_metrics, model))
+        if on_model_end is not None:
+            on_model_end(
+                name, index, total,
+                {"rmse": cv_metrics.get("RMSE"), "mae": cv_metrics.get("MAE"), "r2": cv_metrics.get("R2")},
+            )
+
+    leaderboard, best_model, best_name = _rank_models(results)
+
+    _stage("winner_selected", best_name)
     final_model = finalize_model(best_model)  # refit on the full training data
 
     # Held-out evaluation on the real FD001 test set.
+    _stage("evaluating")
     preds = predict_model(final_model, data=test_df)
     y_pred = preds["prediction_label"] if "prediction_label" in preds else preds.iloc[:, -1]
     metrics = _regression_metrics(test_df[target], y_pred)
 
+    _stage("saving")
     model_path = artifacts_dir / "rul_model"
     save_model(final_model, str(model_path))  # writes rul_model.pkl
 
