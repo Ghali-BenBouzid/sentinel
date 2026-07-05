@@ -95,3 +95,54 @@ def test_session_start_reaches_first_prompt_and_resume_finishes(tmp_path, monkey
 
     snap = client.get(f"/sessions/{tid}").json()
     assert snap["phase"] == "done"
+    assert isinstance(snap["config"], dict)  # config is native (rehydrated by readers)
+
+
+def test_unknown_thread_id_returns_404_on_get_and_resume():
+    """A thread with no checkpoint must 404, not silently start a fresh interview
+    (resume) or return a nulls snapshot (get)."""
+    from sentinel.api.app import create_app
+
+    def factory():
+        return {
+            "provider_smart": OneShotProvider([]),
+            "provider_cheap": FixedProvider(),
+            "train_fn": lambda c: _fake_run(),
+            "ticket_dir": "artifacts/tickets",
+        }
+
+    app = create_app(configurable_factory=factory, checkpointer=MemorySaver())
+    client = TestClient(app)
+
+    assert client.get("/sessions/does-not-exist").status_code == 404
+    assert client.post("/sessions/does-not-exist/resume", json={"answer": "x"}).status_code == 404
+
+
+def test_node_failure_mid_stream_ends_with_error_event(tmp_path, monkeypatch):
+    """If a node raises after the stream has started (here the monitor's model load),
+    the SSE stream must close with a terminal `error` event, not truncate."""
+    from sentinel.agents import monitor
+    from sentinel.api.app import create_app
+
+    def boom(model_path):
+        raise FileNotFoundError("no model on disk")
+
+    monkeypatch.setattr(monitor, "load_predict", boom)
+
+    def factory():
+        return {
+            "provider_smart": OneShotProvider(['{"all_defaults": true}']),
+            "provider_cheap": FixedProvider(),
+            "train_fn": lambda c: _fake_run(),
+            "ticket_dir": str(tmp_path),
+        }
+
+    app = create_app(configurable_factory=factory, checkpointer=MemorySaver())
+    client = TestClient(app)
+
+    tid = client.post("/sessions").headers["x-thread-id"]
+    r = client.post(f"/sessions/{tid}/resume", json={"answer": "yes defaults"})
+    assert r.status_code == 200  # the stream started fine
+    events = list(_sse_events(r))
+    assert events[-1]["event"] == "error"
+    assert "FileNotFoundError" in events[-1]["data"]["message"]

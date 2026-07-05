@@ -243,6 +243,17 @@ LangGraph 1.2.7's serializer (`JsonPlusSerializer`, msgpack) has no pickle fallb
 closure, a `pandas.DataFrame`, or a fitted sklearn estimator all raise `Type is not
 msgpack serializable` (verified directly - see `tests/test_train_state.py`'s
 docstring).
+There is one sharp caveat to "native only": a plain `@dataclass` does *not* raise on
+the way in.
+The serializer quietly encodes it through a deprecated constructor-encoding path (it
+warns "Deserializing unregistered type ... will be blocked in a future version. Set
+LANGGRAPH_STRICT_MSGPACK=true to block now").
+Under `LANGGRAPH_STRICT_MSGPACK=true` (or a future langgraph) that path is blocked and
+the value comes back as a bare kwargs dict instead of the dataclass, so any node that
+then reads it as an object (`config.failure_threshold`) crashes on a real resume.
+That is exactly why the code deliberately stores both `train_state` and the interview
+`config` as plain dicts and rehydrates the dataclass locally at each reader, rather
+than trusting the dataclass to round-trip.
 The pre-V1 code carried a `TrainingRun` - a `predict` closure, a `test_eval`
 DataFrame, and a `TrainResult` wrapping a live estimator - straight into
 `state["train_run"]`.
@@ -256,7 +267,8 @@ plain string, `model_path` as a string, and `test_eval` as records.
 `trainer_node` (`graph.py`) stores only this dict, in `state["train_state"]`:
 
 ```python
-run = train_fn(state["config"])
+cfg = InterviewConfig(**state["config"])  # config crosses as a native dict; rehydrate here
+run = train_fn(cfg)
 train_state = run.to_state()  # only serializable data crosses the checkpoint boundary
 ```
 

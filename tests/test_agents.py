@@ -290,10 +290,10 @@ def test_advance_offers_gate_then_walks_fields_and_carries_acks():
     # Field 1's acknowledgement leads in to field 2's question (continuous chat).
     assert prompts[2].startswith("Got it, turbofan RUL.")
     assert "Below how many cycles" in prompts[2]
-    cfg = prog["config"]
-    assert cfg.framing == "turbofan RUL"
-    assert cfg.failure_threshold == 30
-    assert cfg.rul_cap == 125 and cfg.window == 5
+    cfg = prog["config"]  # a native dict now (only native data crosses the checkpoint)
+    assert cfg["framing"] == "turbofan RUL"
+    assert cfg["failure_threshold"] == 30
+    assert cfg["rul_cap"] == 125 and cfg["window"] == 5
     assert notices == ["Great, RMSE under 20 it is."]
 
 
@@ -311,10 +311,10 @@ def test_all_defaults_up_front_skips_the_whole_interview():
     assert provider.calls == 1
     # Every field took its default...
     cfg = prog["config"]
-    assert cfg.framing == DEFAULTS["framing"]
-    assert cfg.failure_threshold == 30
-    assert cfg.reporting_cadence == DEFAULTS["reporting_cadence"]
-    assert cfg.rul_cap == 125 and cfg.window == 5
+    assert cfg["framing"] == DEFAULTS["framing"]
+    assert cfg["failure_threshold"] == 30
+    assert cfg["reporting_cadence"] == DEFAULTS["reporting_cadence"]
+    assert cfg["rul_cap"] == 125 and cfg["window"] == 5
     # ...and each default was announced (nothing silent).
     assert any("Alert threshold: 30 cycles (default)" in n for n in notices)
     assert any("Success target" in n for n in notices)
@@ -345,10 +345,10 @@ def test_mid_interview_all_defaults_short_circuits_the_rest():
     assert len(prompts) == 3
     # The answered field kept the user's value; the rest defaulted.
     cfg = prog["config"]
-    assert cfg.framing == "turbofan RUL"
-    assert cfg.failure_threshold == 30
-    assert cfg.reporting_cadence == DEFAULTS["reporting_cadence"]
-    assert cfg.success_metric == DEFAULTS["success_metric"]
+    assert cfg["framing"] == "turbofan RUL"
+    assert cfg["failure_threshold"] == 30
+    assert cfg["reporting_cadence"] == DEFAULTS["reporting_cadence"]
+    assert cfg["success_metric"] == DEFAULTS["success_metric"]
     # The remaining defaults were announced.
     assert any("Alert threshold: 30 cycles (default)" in n for n in notices)
     assert any("Reporting:" in n for n in notices)
@@ -545,8 +545,8 @@ def test_graph_runs_interview_to_monitor(tmp_path, monkeypatch):
 
     final = _drive_graph(configurable, answers)
 
-    assert isinstance(final["config"], InterviewConfig)
-    assert final["config"].failure_threshold == 30
+    assert isinstance(final["config"], dict)  # native crosses the checkpoint, readers rehydrate
+    assert final["config"]["failure_threshold"] == 30
     assert final["report"] == "Report: the model is good."
     assert final["event"] == "monitor_done"
     # Unit 1 (RUL 10) alerts and files a ticket; unit 2 (RUL 90) is ok.

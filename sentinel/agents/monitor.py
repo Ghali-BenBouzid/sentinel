@@ -93,7 +93,7 @@ def monitor_node(state: AgentState, config) -> dict:
     cfg = config["configurable"]
     ticket_dir = Path(cfg.get("ticket_dir", "artifacts/tickets"))
     ts = state["train_state"]
-    threshold = state["config"].failure_threshold
+    threshold = state["config"]["failure_threshold"]  # config crosses as native dict
 
     # Rehydrate the model (from disk) and the held-out rows (from records) that
     # were reduced away at the checkpoint boundary.

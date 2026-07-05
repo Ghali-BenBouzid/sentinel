@@ -24,7 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from .interviewer import interviewer_turn
 from .monitor import monitor_node
 from .report_writer import report_writer_node
-from .state import AgentState, append_log
+from .state import AgentState, InterviewConfig, append_log
 
 # event -> next node. `None`/"start" means "no config yet, go interview".
 _ROUTES = {
@@ -60,7 +60,11 @@ def trainer_node(state: AgentState, config) -> dict:
     train_fn = config["configurable"]["train_fn"]
     writer({"type": "training", "phase": "started"})
     try:
-        run = train_fn(state["config"])
+        # state["config"] is native (a dict) so it survives the checkpoint; rehydrate the
+        # dataclass locally for train_fn (expects an InterviewConfig). Inside the try so a
+        # malformed persisted config routes to run_failed instead of truncating the stream.
+        cfg = InterviewConfig(**state["config"])
+        run = train_fn(cfg)
         train_state = run.to_state()  # only serializable data crosses the checkpoint boundary
     except Exception as exc:  # noqa: BLE001 - surface any DS-core (or serialization) failure as an event
         return {

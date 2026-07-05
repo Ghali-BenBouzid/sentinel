@@ -240,7 +240,11 @@ def report_writer_node(state: AgentState, config) -> dict:
         model_path=Path(ts["model_path"]),
         metrics_path=Path(ts["model_path"]),  # unused by write_report
     )
-    report = write_report(result, cheap, state.get("config"), best_model_name=ts["best_model_name"])
+    # config crosses the checkpoint as native data; rehydrate the dataclass locally so
+    # write_report / _success_verdict keep receiving an InterviewConfig (None if absent).
+    raw_config = state.get("config")
+    cfg = InterviewConfig(**raw_config) if raw_config else None
+    report = write_report(result, cheap, cfg, best_model_name=ts["best_model_name"])
     return {
         "report": report,
         "event": "report_ready",

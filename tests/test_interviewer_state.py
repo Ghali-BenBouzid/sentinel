@@ -4,7 +4,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from sentinel.agents import interviewer as iv
-from sentinel.agents.state import InterviewConfig
 
 
 class OneShotProvider:
@@ -23,8 +22,8 @@ def test_gate_accept_fills_all_defaults_in_one_turn():
     p = OneShotProvider(['{"all_defaults": true}'])
     prog = iv.advance(iv.start_progress(), "yes just use defaults", p)
     assert prog["phase"] == "done"
-    assert isinstance(prog["config"], InterviewConfig)
-    assert prog["config"].failure_threshold == iv.DEFAULTS["failure_threshold"]
+    assert isinstance(prog["config"], dict)  # native dict crosses the checkpoint, not a dataclass
+    assert prog["config"]["failure_threshold"] == iv.DEFAULTS["failure_threshold"]
     assert p.calls == 1  # exactly one classifier call this turn
     assert any("default" in n.lower() for n in prog["notices"])
 
@@ -46,7 +45,7 @@ def test_all_defaults_midway_fills_the_rest():
     ad = '{"classification":"ALL_DEFAULTS","reply":"ok defaults","value":null,"deduced":[]}'
     prog = iv.advance(prog, "just use defaults for the rest", OneShotProvider([ad]))
     assert prog["phase"] == "done"
-    assert prog["config"].success_metric == iv.DEFAULTS["success_metric"]
+    assert prog["config"]["success_metric"] == iv.DEFAULTS["success_metric"]
 
 
 def test_advance_does_not_mutate_caller_snapshot():
@@ -158,14 +157,22 @@ def test_trainer_node_emits_training_progress_events(monkeypatch):
     events = []
     monkeypatch.setattr("sentinel.agents.interviewer._get_writer", lambda: events.append)
 
+    # trainer_node rehydrates InterviewConfig(**state["config"]), so pass a valid dict
+    # (its content is irrelevant here - train_fn ignores it; this test pins the bracketing).
+    cfg = {
+        "framing": "x",
+        "failure_threshold": 30,
+        "reporting_cadence": "each run",
+        "success_metric": "RMSE < 20",
+    }
     ok_run = SimpleNamespace(to_state=lambda: {"metrics": {"rmse": 1.0, "r2": 0.5}})
     ok_config = {"configurable": {"train_fn": lambda c: ok_run}}
-    trainer_node({"config": None}, ok_config)
+    trainer_node({"config": cfg}, ok_config)
     assert events == [{"type": "training", "phase": "started"}, {"type": "training", "phase": "finished"}]
 
     events.clear()
     fail_config = {"configurable": {"train_fn": lambda c: (_ for _ in ()).throw(RuntimeError("boom"))}}
-    trainer_node({"config": None}, fail_config)
+    trainer_node({"config": cfg}, fail_config)
     assert events == [{"type": "training", "phase": "started"}]
 
 

@@ -46,7 +46,7 @@ class InterviewProgress(TypedDict, total=False):
     next_prompt: str  # the message to interrupt() with on the next turn
     nonanswers: int  # consecutive non-answers on the active field
     notices: list  # applied-default / ack lines to stream this turn
-    config: object  # the finished InterviewConfig once phase == "done"
+    config: dict  # the finished InterviewConfig as a dict once phase == "done"
 
 
 class AgentState(TypedDict, total=False):
@@ -58,7 +58,7 @@ class AgentState(TypedDict, total=False):
     """
 
     event: str  # significant event driving routing (interview_done, run_finished, ...)
-    config: InterviewConfig  # produced by the interviewer
+    config: dict  # InterviewConfig as a dict (native only crosses the checkpoint; readers rehydrate)
     interview: InterviewProgress  # checkpointed per-turn interview state
     train_state: dict  # serializable training results (`TrainingRun.to_state()`)
     report: str  # produced by the report writer

@@ -11,11 +11,13 @@ serialization round-trip, and that state actually crosses the trainer -> report
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pandas as pd
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.types import Command
 
 
 def _fake_run():
@@ -79,8 +81,8 @@ def test_graph_carries_train_state_across_checkpoints(tmp_path, monkeypatch):
 
     graph = build_graph(checkpointer=MemorySaver())
     final = graph.invoke(
-        {"event": "interview_done", "config": cfg},
-        config={"configurable": configurable, "thread_id": "t1"},
+        {"event": "interview_done", "config": dataclasses.asdict(cfg)},
+        config={"configurable": {**configurable, "thread_id": "t1"}},
     )
 
     assert final["event"] == "monitor_done"
@@ -122,10 +124,58 @@ def test_to_state_failure_routes_to_run_failed_not_a_crash(tmp_path):
 
     graph = build_graph(checkpointer=MemorySaver())
     final = graph.invoke(
-        {"event": "interview_done", "config": cfg},
-        config={"configurable": configurable, "thread_id": "t2"},
+        {"event": "interview_done", "config": dataclasses.asdict(cfg)},
+        config={"configurable": {**configurable, "thread_id": "t2"}},
     )
 
     assert final["event"] == "failed_reported"
     assert "ValueError: boom" in final["error"]
     assert "boom" in final["report"]
+
+
+def test_full_graph_under_strict_msgpack_no_dataclass_crosses(tmp_path, monkeypatch):
+    """The `state["config"]` twin of the train_state rule, under STRICT serialization.
+
+    A `JsonPlusSerializer(allowed_msgpack_modules=None)` is exactly what
+    `LANGGRAPH_STRICT_MSGPACK=true` (or a future langgraph) installs: any dataclass
+    written into state no longer rehydrates - it comes back as a bare kwargs dict -
+    so any node reading `state["config"]` as a dataclass (`config.framing`,
+    `config.failure_threshold`) crashes. Driving the WHOLE graph (all-defaults
+    interview -> trainer -> report -> monitor) proves config crosses every
+    checkpoint as native data. On the pre-fix code this raises in report_writer /
+    monitor; after the fix it reaches `monitor_done` and `config` stays a dict.
+    """
+    from sentinel.agents import monitor
+    from sentinel.agents.graph import build_graph
+
+    class GateProvider:
+        """provider_smart: the interviewer's gate classifier accepts all-defaults."""
+
+        def complete(self, messages, **kwargs) -> str:
+            return '{"all_defaults": true}'
+
+    class ReportProvider:
+        def complete(self, messages, **kwargs) -> str:
+            return "Report: model looks fine."
+
+    monkeypatch.setattr(monitor, "load_predict", lambda model_path: (lambda f: [10.0] * len(f)))
+
+    configurable = {
+        "provider_smart": GateProvider(),
+        "provider_cheap": ReportProvider(),
+        "train_fn": lambda c: _fake_run(),
+        "ticket_dir": str(tmp_path),
+    }
+    thread = {"configurable": {**configurable, "thread_id": "strict1"}}
+
+    strict = JsonPlusSerializer(allowed_msgpack_modules=None)  # == LANGGRAPH_STRICT_MSGPACK=true
+    graph = build_graph(checkpointer=MemorySaver(serde=strict))
+
+    graph.invoke({"event": "start"}, thread)  # runs to the gate interrupt
+    final = graph.invoke(Command(resume="yes, just use sensible defaults"), thread)
+
+    assert final["event"] == "monitor_done"
+    assert type(final["config"]) is dict  # native crossed the boundary, not a dataclass
+    # Nothing checkpointed is a dataclass INSTANCE (the native-only invariant).
+    for value in graph.get_state(thread).values.values():
+        assert not (dataclasses.is_dataclass(value) and not isinstance(value, type))

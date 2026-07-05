@@ -33,7 +33,7 @@ applied-default and ack lines stream out through the LangGraph stream writer.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 
 from langgraph.types import interrupt
@@ -286,7 +286,10 @@ def _finish(values: dict, notices: list, opener: str) -> InterviewProgress:
     return {
         "phase": "done",
         "notices": notices,
-        "config": InterviewConfig(**values, **_EXTRA_DEFAULTS),
+        # asdict so only native data crosses the checkpoint; readers rehydrate the
+        # dataclass locally (mirrors the train_state pattern). Building the dataclass
+        # first still validates the field set.
+        "config": asdict(InterviewConfig(**values, **_EXTRA_DEFAULTS)),
     }
 
 
@@ -353,7 +356,7 @@ def advance(progress: InterviewProgress, reply: str, provider: Provider) -> Inte
         if ack:
             p["notices"] = [*p["notices"], ack]
         p["phase"] = "done"
-        p["config"] = InterviewConfig(**p["values"], **_EXTRA_DEFAULTS)
+        p["config"] = asdict(InterviewConfig(**p["values"], **_EXTRA_DEFAULTS))  # native crosses the checkpoint
         return p
     p["active_index"] = nxt
     nf, nq = QUESTIONS[nxt]
