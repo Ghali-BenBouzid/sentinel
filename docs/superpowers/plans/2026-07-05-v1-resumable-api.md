@@ -752,6 +752,46 @@ git commit -m "chore(v1): retire Streamlit dashboard; docs describe the resumabl
 
 ---
 
+### Task 8: Learning note (written LAST, after everything is green)
+
+This is a learning project: every completed piece of work gets a `docs/learning/` note with lessons and exercises.
+Write this only after Tasks 1-7 are complete, all tests pass, and no debugging or changes remain, so it reflects the real, final implementation.
+
+**Files:**
+- Create: `docs/learning/03-resumable-and-api.md`
+
+**Interfaces:** none (documentation).
+
+- [ ] **Step 1: Verify the work is truly done**
+
+Run: `uv run pytest -q && uv run ruff check .`
+Expected: all green. Do NOT start this task if anything is red or a follow-up change is still pending.
+
+- [ ] **Step 2: Write `docs/learning/03-resumable-and-api.md`**
+
+Match the shape of `01-ds-core.md` / `02-agent-layer.md`: numbered conceptual sections, then a final "Try it yourself" exercises section. Cover, grounded in the code as actually shipped:
+1. The human-in-the-loop problem: why a blocking `ask()` on a thread cannot back a real web request, and what "resumable" means.
+2. `interrupt()` and the replay gotcha: why a node re-executes from the top on resume, and why one-interrupt-per-node (the self-loop) is the fix. Walk the `advance()` state machine.
+3. Checkpointers: what `SqliteSaver` persists, what `thread_id` keys, how `Command(resume=...)` continues.
+4. Streaming: `get_stream_writer()` custom events vs `stream_mode="updates"`, and how SSE carries them.
+5. The API contract: the three endpoints and why SSE-out/POST-in fits a turn-based flow.
+6. What was deleted and why (the `GraphRunner` thread/queue bridge) - contrast old vs new.
+
+"Try it yourself" exercises (each runnable), e.g.:
+- Add a fifth interview field and watch it flow through `advance()` + the self-loop with no other change.
+- Deliberately move an LLM call outside the single-interrupt discipline and observe the replay (call count) to feel the gotcha.
+- Kill and restart the process mid-interview and resume the same `thread_id` from the SQLite file.
+- Add a new SSE event type end-to-end (node writer -> API -> test).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/learning/03-resumable-and-api.md
+git commit -m "docs(learning): note 03 - resumable graph, interrupt(), and the streaming API"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
