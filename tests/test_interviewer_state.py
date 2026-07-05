@@ -112,3 +112,19 @@ def test_graph_interview_one_llm_call_per_turn():
         graph.invoke(Command(resume=a), thread)
     # One classifier call per delivered answer (gate + 4 fields) - NO replay.
     assert p.calls == 5
+
+
+def test_default_checkpointer_creates_missing_parent_dir(tmp_path, monkeypatch):
+    """Default SqliteSaver path: sqlite3 won't mkdir, so build_graph() must - else a
+    fresh clone (artifacts/ untracked) hits 'unable to open database file'."""
+    from sentinel.agents.graph import build_graph
+    from sentinel.config import get_settings
+
+    db = tmp_path / "nested" / "does_not_exist" / "checkpoints.sqlite"
+    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(db))
+    get_settings.cache_clear()
+    try:
+        assert build_graph() is not None  # default checkpointer, no MemorySaver
+        assert db.parent.is_dir()
+    finally:
+        get_settings.cache_clear()

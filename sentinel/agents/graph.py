@@ -107,10 +107,13 @@ def _default_checkpointer():
     directly (exactly what `from_conn_string` does internally, minus the close).
     """
     import sqlite3
+    from pathlib import Path
 
     from langgraph.checkpoint.sqlite import SqliteSaver
 
     from ..config import get_settings
 
-    conn = sqlite3.connect(get_settings().checkpoint_db_path, check_same_thread=False)
+    path = get_settings().checkpoint_db_path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)  # sqlite3 won't create it
+    conn = sqlite3.connect(path, check_same_thread=False)
     return SqliteSaver(conn)
