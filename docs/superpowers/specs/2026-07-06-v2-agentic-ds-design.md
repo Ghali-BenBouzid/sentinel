@@ -119,16 +119,27 @@ The `autonomy` mode is the exception: it is per-session and must survive across 
 | `train` | `rul_cap?, window?, models?` | Full comparison; registers **the winner** as a loadable model and records the full leaderboard *metrics*; returns the leaderboard summary. Wraps `train_and_evaluate`. | confirm |
 | `retrain` | `model_id, hyperparameters, rul_cap?, window?` | Parameterized single-model train (NEW DS-core entrypoint); registers a candidate; returns its held-out metrics. | confirm |
 | `evaluate` | `model_id` | Held-out metrics for a registered model. | - |
-| `compare` | `model_id_a, model_id_b` | Side-by-side metrics + deltas. | - |
+| `compare` | `model_id_a, model_id_b` | Side-by-side metrics + deltas, **only across a common evaluation config** (see below). | - |
 | `inspect` | `what` | Read-only: leaderboard / dataset stats / a model's params / the registry listing. | - |
 | `promote` | `model_id` | Set the registry's `active` model. | confirm |
-| `delete` | `model_id` | Remove a registered candidate. | confirm |
+| `delete` | `model_id` | Remove a registered candidate; **refuses the active model** (see below). | confirm |
 | `write_report` | (none) | Grounded report over the active model's metrics. Wraps `report_writer`, keeps the no-fabrication prompt. | - |
-| `run_monitor` | (none) | Step held-out readings through the active model; emit alerts / mock tickets. Wraps `monitor`. Guarded because writing a ticket is the monitor's external *action*. | confirm |
+| `run_monitor` | (none) | Step the active model's stored readings (`registry.readings(active_id)`) through it; emit alerts / mock tickets. Wraps `monitor`. Guarded because writing a ticket is the monitor's external *action*. | confirm |
 
 Invalid tool calls (bad model id, malformed hyperparameters) and a declined confirmation both **return** a descriptive string the agent can recover from - never a raised exception.
 This matters concretely: the installed LangGraph `ToolNode` only converts tool-*validation* errors into messages and re-raises anything else, so a custom exception from a denied confirmation would terminate the graph.
 Guarded tools therefore return the denial string rather than raising (see the rail helper below).
+
+Two integrity rules the tools enforce, because the agent will otherwise stumble into them:
+
+- **Metrics are only comparable within one evaluation config.**
+  `rul_cap` caps the RUL target and `window` changes the features, so a model trained under `rul_cap=100` has RMSE/MAE on a *different target scale* than one under `rul_cap=125` - a raw delta between them is meaningless and could promote a "better" number that is only better because its target was easier.
+  Every model's `provenance.json` records its evaluation config (`rul_cap`, `window`).
+  `compare` refuses a direct delta when the two configs differ; instead it **re-evaluates both models on one common held-out target** (the active model's config, or a config the caller names) via `evaluate`, then deltas those.
+  Stored metrics are a fast path only when the configs already match.
+- **The active model cannot be deleted out from under the system.**
+  `registry.remove(id)` (and the `delete` tool) refuse to remove the currently-active model, returning a message telling the agent to promote another model first.
+  This keeps `manifest.json.active` from ever pointing at a missing directory, which would break `write_report`, `evaluate`, and `run_monitor`.
 
 ## DS-core addition: parameterized retraining
 
@@ -164,13 +175,20 @@ artifacts/models/
   <id>/
     model.pkl                   # the PyCaret pipeline
     metrics.json                # held-out rmse/mae/r2 + cv leaderboard row
-    provenance.json             # { source, model_id, hyperparameters, config, parent, created_at }
+    provenance.json             # { source, model_id, hyperparameters, config (rul_cap, window), parent, created_at }
+    readings.json               # the held-out monitor readings (test_eval) for THIS model's config
 ```
 
 Ids are short and human-legible: `et-v1`, `et-v2`, `lightgbm-v1`.
-The registry API is small and native-JSON: `register(...) -> id`, `get(id)`, `list()`, `active()`, `set_active(id)`, `remove(id)`, `load_predict(id)`.
+The registry API is small and native-JSON: `register(...) -> id`, `get(id)`, `list()`, `active()`, `set_active(id)`, `remove(id)`, `load_predict(id)`, `readings(id)`.
 Tools are the only writers.
-Nothing heavy leaves it: callers get a string id or a small metrics dict; the model itself is rehydrated on demand via `load_predict(id)` (the V1 `training.load_predict` pattern, generalized to the registry).
+Nothing heavy leaves it: callers get a string id, a small metrics dict, or the readings records; the model itself is rehydrated on demand via `load_predict(id)` (the V1 `training.load_predict` pattern, generalized to the registry).
+
+**Why `readings.json` is stored, not reconstructed.**
+V1's monitor consumed the held-out `test_eval` frame (one row per FD001 test unit at its last cycle) that training produced.
+Now that state is reduced to messages, the monitor needs a defined source for those rows.
+They are config-dependent (the `window` feature knob changes them), so each model persists the exact readings built under *its own* config when it is registered - `run_monitor` loads `registry.readings(active_id)`.
+`test_eval` is small (a few hundred rows) and native-JSON, so storing it per model is cheaper and more deterministic than re-loading FD001 and re-featurizing on every monitor call.
 
 ## Safety rails and autonomy
 
@@ -240,7 +258,8 @@ No live LLM, no PyCaret, no network - the whole agent runs on fakes.
 - **`FakeChatModel`**: a `BaseChatModel` stub that emits a scripted sequence of tool calls then a final answer, so a test drives an exact agent trajectory deterministically.
 - **Fake `train_fn`** (the V1 pattern): tools that train use the injected training function; tests inject one returning a canned `TrainResult`, so no PyCaret runs.
 - **Per-tool unit tests**: each tool against a temp registry - `retrain` registers a candidate, `compare` computes deltas, `inspect` reads, `promote` moves `active`.
-- **Registry round-trip**: `register` / `get` / `set_active` / `remove` / `load_predict` on disk under `tmp_path`.
+- **Registry round-trip**: `register` / `get` / `set_active` / `remove` / `load_predict` / `readings` on disk under `tmp_path`; `remove` refuses the active model.
+- **Comparable-metrics test**: `compare` of two models with different `rul_cap` re-evaluates on a common target rather than deltaing the stored (incomparable) numbers.
 - **Rail tests**: guarded mode `interrupt`s and a `no` makes the tool *return* a denial string (the graph continues, the active model is unchanged); autonomous mode skips the interrupt and streams `auto_approved`.
 - **Autonomy persistence test**: a session started autonomous stays autonomous across a follow-up `invoke` (proves it is read from checkpointed state, not re-supplied config).
 - **End-to-end trajectory**: a scripted `FakeChatModel` drives "train -> retrain et -> compare -> promote" through the real graph + `MemorySaver` across *multiple* `invoke` turns, asserting history carries over and the registry ends with the promoted model active - the V2 analogue of V1's full-graph wiring test.
