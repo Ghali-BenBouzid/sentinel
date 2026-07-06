@@ -48,23 +48,32 @@ Predictability for flexibility - the right trade for a delegatable agent.
 It is a ReAct loop: the chat model sees the conversation plus the bound tool schemas, emits tool calls, a `ToolNode` runs them, results feed back, and the loop continues until the model answers in prose.
 
 ```
-        user turn (interrupt) 
-              |
-              v
-   +----------------------+       tool call
-   |  create_react_agent  | -----------------> [ ToolNode: run tool, append result ]
-   |  (chat model + ReAct)| <-----------------
+   new user message                                confirmation reply
+   invoke({messages:[HumanMessage]})               Command(resume="yes")
+              |                                            |
+              v                                            v
+   +----------------------+       tool call        [ interrupt() inside a
+   |  create_react_agent  | --------------------->   guarded tool, mid-loop ]
+   |  (chat model + ReAct)| <---------------------
    +----------------------+       tool result
               |
-         prose answer -> back to the user (interrupt for the next turn)
+         prose answer -> loop ends, wait for the next user message
 ```
+
+Two distinct mechanisms drive the graph, and the design keeps them separate (this is the subtlety a naive "resume on every turn" gets wrong):
+
+- **A new conversation turn is a fresh `invoke`** with a new `HumanMessage` on the *same* `thread_id`.
+  `create_react_agent` ends its run after the prose answer - it does not stay suspended waiting for the next message.
+  The checkpointer preserves the full message history under the thread, so the next turn just appends a `HumanMessage` and re-invokes; the agent sees the whole conversation.
+- **`Command(resume=...)` is used *only* to answer a confirmation** raised by `interrupt()` inside a guarded tool mid-loop.
+  It is never how a chat turn is delivered.
 
 What V1 constructs disappear:
 `orchestrator_node`, `route()`, the `_ROUTES` table, `route_interview`, and the trainer/report/monitor *nodes* (their logic moves into tools).
 The `interviewer.py` `advance()` state machine (~400 lines: gate, deduction, defaults, non-answer bounds) dissolves entirely - a reasoning agent conversing *is* the interview, and it calls `save_config` when it has what it needs.
 
 What stays, untouched or nearly so:
-the checkpointer substrate (`SqliteSaver` default, `MemorySaver` in tests), `interrupt()` for human turns, the streaming seam (`get_stream_writer` for progress events), `domain_context.glossary()` grounding, and the DS core (`sentinel/core/*`) plus its callback/stage-event hooks.
+the checkpointer substrate (`SqliteSaver` default, `MemorySaver` in tests) - which now also preserves conversation history across turns - `interrupt()` for mid-tool confirmations, the streaming seam (`get_stream_writer` for progress events), `domain_context.glossary()` grounding, and the DS core (`sentinel/core/*`) plus its callback/stage-event hooks.
 
 ## The LLM seam evolves
 
@@ -101,12 +110,13 @@ The registry is the single source of truth for artifacts, addressed by id.
 ## Tools (`sentinel/agents/tools.py`)
 
 Each tool is a typed function (`@tool` with a pydantic-validated signature) that wraps existing DS-core / sub-agent logic and reads/writes the registry.
-Dependencies (the `train_fn`, the chat model for report/interview grounding, `ticket_dir`, `autonomy`) come from the injected runtime config, not tool arguments - same dependency-injection discipline as V1.
+Stateless dependencies (the `train_fn`, the chat model for report grounding, `ticket_dir`) come from the injected runtime config, not tool arguments - same dependency-injection discipline as V1.
+The `autonomy` mode is the exception: it is per-session and must survive across invocations, so it lives in *checkpointed graph state* and reaches the rail via `InjectedState`, not `configurable` (see Safety rails below).
 
 | Tool | Signature (args the model fills) | Does | Rail |
 |---|---|---|---|
 | `save_config` | `framing, failure_threshold, reporting_cadence, success_metric, rul_cap?, window?` | Persist the run config the agent gathered conversationally. Replaces the interviewer machine. | - |
-| `train` | `rul_cap?, window?, models?` | Full comparison; registers every candidate + the winner; returns the leaderboard summary. Wraps `train_and_evaluate`. | confirm |
+| `train` | `rul_cap?, window?, models?` | Full comparison; registers **the winner** as a loadable model and records the full leaderboard *metrics*; returns the leaderboard summary. Wraps `train_and_evaluate`. | confirm |
 | `retrain` | `model_id, hyperparameters, rul_cap?, window?` | Parameterized single-model train (NEW DS-core entrypoint); registers a candidate; returns its held-out metrics. | confirm |
 | `evaluate` | `model_id` | Held-out metrics for a registered model. | - |
 | `compare` | `model_id_a, model_id_b` | Side-by-side metrics + deltas. | - |
@@ -114,9 +124,11 @@ Dependencies (the `train_fn`, the chat model for report/interview grounding, `ti
 | `promote` | `model_id` | Set the registry's `active` model. | confirm |
 | `delete` | `model_id` | Remove a registered candidate. | confirm |
 | `write_report` | (none) | Grounded report over the active model's metrics. Wraps `report_writer`, keeps the no-fabrication prompt. | - |
-| `run_monitor` | (none) | Step held-out readings through the active model; emit alerts / mock tickets. Wraps `monitor`. | - |
+| `run_monitor` | (none) | Step held-out readings through the active model; emit alerts / mock tickets. Wraps `monitor`. Guarded because writing a ticket is the monitor's external *action*. | confirm |
 
-Invalid tool calls (bad model id, malformed hyperparameters) return a descriptive error string the agent can recover from - never a crash that truncates the stream.
+Invalid tool calls (bad model id, malformed hyperparameters) and a declined confirmation both **return** a descriptive string the agent can recover from - never a raised exception.
+This matters concretely: the installed LangGraph `ToolNode` only converts tool-*validation* errors into messages and re-raises anything else, so a custom exception from a denied confirmation would terminate the graph.
+Guarded tools therefore return the denial string rather than raising (see the rail helper below).
 
 ## DS-core addition: parameterized retraining
 
@@ -165,42 +177,60 @@ Nothing heavy leaves it: callers get a string id or a small metrics dict; the mo
 Two modes, one seam.
 
 **Guarded (default).**
-`train`, `retrain`, `promote`, and `delete` stop and ask the human `y/n` before running.
-`train`/`retrain` are guarded because they burn real compute (minutes of PyCaret); `promote`/`delete` because they mutate the active system.
-The read/additive tools (`evaluate`, `compare`, `inspect`, `write_report`, `run_monitor`) run freely.
+`train`, `retrain`, `promote`, `delete`, and `run_monitor` stop and ask the human `y/n` before running.
+`train`/`retrain` are guarded because they burn real compute (minutes of PyCaret); `promote`/`delete` because they mutate the active system; `run_monitor` because writing a ticket is an external action.
+The read/analytic tools (`evaluate`, `compare`, `inspect`, `write_report`) run freely.
 Confirmation happens via `interrupt()`, so it works identically over the CLI and the HTTP/SSE surface and survives a checkpoint.
 
 **Autonomous.**
 A user-set mode that skips every confirmation - "delegate and walk away."
 Even so, each auto-approved action streams a notice (`{"type": "auto_approved", "tool": ...}`) so an unattended run is still auditable.
 
-The seam is a single helper used by every guarded tool:
+**Autonomy is per-session state, not runtime config.**
+`config["configurable"]` is passed fresh on every `invoke`/`resume` and is *not* checkpointed, so storing autonomy there would silently revert to the default on the next request.
+Instead `autonomy` is written into checkpointed graph state when the session starts (`create_react_agent`'s state schema is extended with an `autonomy` field), and the rail reads it via `InjectedState` - so it persists for the life of the session without the client having to resend it.
+The session-start value comes from the request (`--autonomous` on the CLI, the `autonomy` field on `POST /sessions`), defaulting from `get_settings()` (`SENTINEL_AUTONOMY=guarded|autonomous`, `guarded` default).
+
+The seam is a single helper used by every guarded tool.
+It **returns** on approval and **returns a denial string** on refusal - it never raises, because the default `ToolNode` would re-raise a custom exception and terminate the graph:
 
 ```python
-def require_confirmation(action: str, detail: str, autonomy: str) -> None:
+def confirm(action: str, detail: str, autonomy: str) -> str | None:
+    """Return None if the action may proceed, or a denial string the tool returns as-is."""
     if autonomy == "autonomous":
         get_stream_writer()({"type": "auto_approved", "tool": action, "detail": detail})
-        return
+        return None
     answer = interrupt({"type": "confirm", "tool": action, "detail": detail})
-    if str(answer).strip().lower() not in {"y", "yes"}:
-        raise ToolDenied(f"user declined {action}")
-```
+    if str(answer).strip().lower() in {"y", "yes"}:
+        return None
+    return f"Declined: the user did not approve {action} ({detail})."
 
-`autonomy` is injected per session via `config["configurable"]["autonomy"]`, defaulting from `get_settings()` (`SENTINEL_AUTONOMY=guarded|autonomous`, `guarded` default).
-A `ToolDenied` returns a clean "user declined" message to the agent, which continues the conversation rather than crashing.
+# in a guarded tool (autonomy comes from InjectedState):
+def promote(model_id: str, state: Annotated[dict, InjectedState]) -> str:
+    denial = confirm("promote", model_id, state["autonomy"])
+    if denial:
+        return denial            # clean message back to the agent, graph continues
+    registry.set_active(model_id)
+    return f"Promoted {model_id}; it is now the active model."
+```
 
 ## Surfaces: CLI and HTTP/SSE
 
 Both are in this slice.
 
+Both drive the graph through the same two mechanisms (new-message `invoke` vs. confirmation `resume`); the difference is just transport.
+
 **CLI** (`python -m sentinel.agents`): a chat loop.
-Read a line, feed it to the agent, stream tool-calls / stage events / the prose answer, and when the agent `interrupt()`s (a question or a confirmation) prompt the user and resume with `Command(resume=...)`.
-`--autonomous` sets autonomous mode.
+Read a line and `invoke` the agent with it as a `HumanMessage`; stream tool-calls / stage events / the prose answer.
+If the run *interrupts* on a confirmation, prompt for `y/n` and `Command(resume=...)` to continue the *same* run; otherwise the run ends and we wait for the next line (a fresh `invoke`).
+`--autonomous` sets the session's autonomy at start.
 
 **HTTP/SSE** (`sentinel/api/app.py`): adapt the V1 surface to the agent.
-`POST /sessions` (optional `{"autonomy": "..."}`) starts a session and streams until the first interrupt.
-`POST /sessions/{id}/resume` (`{"answer": "..."}`) posts one turn - a chat message *or* a `y/n` confirmation - and streams on.
-`GET /sessions/{id}` reads a snapshot from the checkpointer.
+`POST /sessions` (optional `{"autonomy": "..."}`, `{"message": "..."}`) starts a session, sets autonomy in state, and streams until the run ends or interrupts.
+The endpoints mirror the two mechanisms explicitly rather than overloading one:
+`POST /sessions/{id}/message` (`{"message": "..."}`) delivers a new conversation turn (a fresh `invoke` appending a `HumanMessage`);
+`POST /sessions/{id}/resume` (`{"answer": "y"}`) answers a pending confirmation (`Command(resume=...)`).
+`GET /sessions/{id}` reads a snapshot from the checkpointer (including whether a confirmation is pending).
 The SSE event vocabulary extends V1's: `message` (agent prose), `tool_call` / `tool_result`, `stage` / `model_training` / `model_trained` (unchanged training progress), `confirm` (a rail awaiting y/n), `auto_approved`, `done`, `error`.
 
 ## Testing (offline, same discipline as V1)
@@ -211,8 +241,9 @@ No live LLM, no PyCaret, no network - the whole agent runs on fakes.
 - **Fake `train_fn`** (the V1 pattern): tools that train use the injected training function; tests inject one returning a canned `TrainResult`, so no PyCaret runs.
 - **Per-tool unit tests**: each tool against a temp registry - `retrain` registers a candidate, `compare` computes deltas, `inspect` reads, `promote` moves `active`.
 - **Registry round-trip**: `register` / `get` / `set_active` / `remove` / `load_predict` on disk under `tmp_path`.
-- **Rail tests**: guarded mode `interrupt`s and a `no` raises `ToolDenied`; autonomous mode skips the interrupt and streams `auto_approved`.
-- **End-to-end trajectory**: a scripted `FakeChatModel` drives "train -> retrain et -> compare -> promote" through the real graph + `MemorySaver`, asserting the registry ends with the promoted model active - the V2 analogue of V1's full-graph wiring test.
+- **Rail tests**: guarded mode `interrupt`s and a `no` makes the tool *return* a denial string (the graph continues, the active model is unchanged); autonomous mode skips the interrupt and streams `auto_approved`.
+- **Autonomy persistence test**: a session started autonomous stays autonomous across a follow-up `invoke` (proves it is read from checkpointed state, not re-supplied config).
+- **End-to-end trajectory**: a scripted `FakeChatModel` drives "train -> retrain et -> compare -> promote" through the real graph + `MemorySaver` across *multiple* `invoke` turns, asserting history carries over and the registry ends with the promoted model active - the V2 analogue of V1's full-graph wiring test.
 
 ## What this unlocks (deliberately deferred)
 
