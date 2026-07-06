@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # SQLite file the LangGraph checkpointer persists resumable run state to.
     checkpoint_db_path: str = "artifacts/sentinel-checkpoints.sqlite"
 
+    # V2 agent autonomy: guarded confirms expensive/destructive tools.
+    sentinel_autonomy: str = "guarded"
+
+    # Optional per-tier model-name overrides.
+    sentinel_model_smart: str | None = None
+    sentinel_model_cheap: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

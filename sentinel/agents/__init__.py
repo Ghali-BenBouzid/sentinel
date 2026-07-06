@@ -1,11 +1,5 @@
-"""The Sentinel agent layer (Milestone 2).
+"""Sentinel's agentic data-science layer."""
 
-A LangGraph graph wrapping the M1 DS core: an orchestrator that routes on
-significant events, plus interviewer / report-writer / monitor sub-agents. See
-`docs/learning/02-agent-layer.md` and `docs/pdm-agent-design.md`.
-"""
+from .state import InterviewConfig
 
-from .graph import build_graph, route
-from .state import AgentState, InterviewConfig
-
-__all__ = ["build_graph", "route", "AgentState", "InterviewConfig"]
+__all__ = ["InterviewConfig"]
