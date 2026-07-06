@@ -1,15 +1,8 @@
-"""FastAPI surface over the resumable agent graph. SSE out, POST in.
+"""FastAPI/SSE surface over the V2 agent. SSE out, POST in.
 
-`POST /sessions` starts a new thread and streams to the first interrupt.
-`POST /sessions/{tid}/resume` feeds one answer and streams on to the next
-interrupt (or to done). `GET /sessions/{tid}` reads a snapshot straight from
-the checkpointer, so a client can reconnect after losing the SSE stream.
-
-Dependencies (LLM providers, `train_fn`, `ticket_dir`) are injected the same
-way the CLI and tests inject them - via `config["configurable"]` - so
-`configurable_factory` is the one seam a caller (or a test) overrides.
+New conversation turns append a HumanMessage. Confirmation replies resume
+pending interrupt ids. Session autonomy is set once and checkpointed.
 """
-
 from __future__ import annotations
 
 import json
@@ -17,95 +10,180 @@ import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from ..agents.graph import build_graph
-from ..agents.training import run_training
-from ..llm.provider import get_provider
+from ..agents.agent import build_agent
+from ..agents.training import run_retraining, run_training
+from ..config import get_settings
+from ..llm.provider import get_chat_model
 
 
-def _default_factory() -> dict:
-    return {
-        "provider_smart": get_provider("smart"),
-        "provider_cheap": get_provider("cheap"),
-        "train_fn": run_training,
-        "ticket_dir": "artifacts/tickets",
-    }
+def _default_factory(checkpointer):
+    return build_agent(
+        chat_model=get_chat_model("smart"),
+        train_fn=run_training,
+        retrain_fn=run_retraining,
+        tools_chat_model=get_chat_model("cheap"),
+        ticket_dir="artifacts/tickets",
+        models_dir="artifacts/models",
+        checkpointer=checkpointer,
+    )
 
 
 def _sse(event: str, data) -> str:
-    return f"data: {json.dumps({'event': event, 'data': data})}\n\n"
+    return (
+        f"data: {json.dumps({'event': event, 'data': data})}\n\n"
+    )
 
 
-def create_app(configurable_factory=None, checkpointer=None) -> FastAPI:
-    app = FastAPI(title="Sentinel")
-    factory = configurable_factory or _default_factory
-    graph = build_graph(checkpointer=checkpointer)
+def create_app(agent_factory=None, checkpointer=None) -> FastAPI:
+    """Build the API around one process-lifetime compiled agent."""
+    app = FastAPI(title="Sentinel V2")
+    factory = agent_factory or _default_factory
+    agent = factory(checkpointer)
 
-    def _thread(tid: str) -> dict:
-        return {"configurable": {**factory(), "thread_id": tid}}
+    def _thread(thread_id: str) -> dict:
+        return {"configurable": {"thread_id": thread_id}}
 
-    def _require_checkpoint(thread: dict) -> None:
-        """404 if the thread has no checkpoint yet (created_at is None only then)."""
-        if graph.get_state(thread).created_at is None:
-            raise HTTPException(status_code=404, detail="unknown session")
+    def _require(thread: dict) -> None:
+        if agent.get_state(thread).created_at is None:
+            raise HTTPException(
+                status_code=404, detail="unknown session"
+            )
 
-    def _run(inp, thread):
-        """Stream one graph leg, yielding SSE lines up to the next interrupt/END.
-
-        A node raising mid-stream (report_writer's provider call, monitor's model
-        load) would otherwise truncate the SSE response with no closing event; catch
-        it and emit a terminal `error` event so the client sees a clean end.
-        """
+    async def _stream(graph_input, thread):
         try:
-            for mode, chunk in graph.stream(inp, thread, stream_mode=["custom", "updates"]):
+            for mode, chunk in agent.stream(
+                graph_input,
+                thread,
+                stream_mode=["custom", "updates"],
+            ):
                 if mode == "custom":
                     yield _sse(chunk.get("type", "notify"), chunk)
                 elif mode == "updates":
-                    for _node, upd in chunk.items():
-                        if isinstance(upd, dict) and upd.get("report"):
-                            yield _sse("report", {"text": upd["report"]})
-        except Exception as exc:  # noqa: BLE001 - surface any node failure as a stream event, not a truncation
-            yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
+                    for update in (chunk or {}).values():
+                        messages = (
+                            update.get("messages")
+                            if isinstance(update, dict)
+                            else None
+                        )
+                        for message in messages or []:
+                            if isinstance(message, AIMessage):
+                                if getattr(message, "content", ""):
+                                    yield _sse(
+                                        "message",
+                                        {"text": message.content},
+                                    )
+                                for call in message.tool_calls:
+                                    yield _sse(
+                                        "tool_call",
+                                        {
+                                            "name": call["name"],
+                                            "args": call["args"],
+                                        },
+                                    )
+                            elif isinstance(message, ToolMessage):
+                                yield _sse(
+                                    "tool_result",
+                                    {
+                                        "name": message.name,
+                                        "text": message.content,
+                                    },
+                                )
+        except Exception as error:  # noqa: BLE001
+            yield _sse(
+                "error",
+                {
+                    "message": (
+                        f"{type(error).__name__}: {error}"
+                    )
+                },
+            )
             return
-        state = graph.get_state(thread)
-        if state.tasks and state.tasks[0].interrupts:
-            yield _sse("prompt", {"text": state.tasks[0].interrupts[0].value})
+        state = agent.get_state(thread)
+        if state.interrupts:
+            for item in state.interrupts:
+                yield _sse(
+                    "confirm",
+                    {**item.value, "interrupt": item.id},
+                )
         else:
-            phase = (state.values.get("interview") or {}).get("phase", "done")
-            yield _sse("done", {"phase": phase})
+            yield _sse("done", {})
 
     @app.post("/sessions")
-    def start():
-        tid = uuid.uuid4().hex
-        thread = _thread(tid)
+    async def start(body: dict | None = None):
+        body = body or {}
+        thread_id = uuid.uuid4().hex
+        thread = _thread(thread_id)
+        autonomy = (
+            body.get("autonomy")
+            or get_settings().sentinel_autonomy
+        )
+        graph_input = {
+            "messages": [
+                HumanMessage(body.get("message", "Hello"))
+            ],
+            "autonomy": autonomy,
+        }
         return StreamingResponse(
-            _run({"event": "start"}, thread),
+            _stream(graph_input, thread),
             media_type="text/event-stream",
-            headers={"x-thread-id": tid},
+            headers={"x-thread-id": thread_id},
         )
 
-    @app.post("/sessions/{tid}/resume")
-    def resume(tid: str, body: dict):
-        thread = _thread(tid)
-        _require_checkpoint(thread)  # don't silently start a new interview on an unknown thread
+    @app.post("/sessions/{thread_id}/message")
+    async def message(thread_id: str, body: dict):
+        thread = _thread(thread_id)
+        _require(thread)
+        graph_input = {
+            "messages": [HumanMessage(body["message"])]
+        }
         return StreamingResponse(
-            _run(Command(resume=body.get("answer", "")), thread),
+            _stream(graph_input, thread),
             media_type="text/event-stream",
-            headers={"x-thread-id": tid},
+            headers={"x-thread-id": thread_id},
         )
 
-    @app.get("/sessions/{tid}")
-    def snapshot(tid: str):
-        thread = _thread(tid)
-        _require_checkpoint(thread)
-        values = graph.get_state(thread).values
-        prog = values.get("interview") or {}
+    @app.post("/sessions/{thread_id}/resume")
+    async def resume(thread_id: str, body: dict):
+        thread = _thread(thread_id)
+        _require(thread)
+        answers = body.get("answers")
+        if answers is None:
+            state = agent.get_state(thread)
+            if len(state.interrupts) != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "multiple confirmations pending; "
+                        "use 'answers' map"
+                    ),
+                )
+            answers = {
+                state.interrupts[0].id: body.get("answer", "")
+            }
+        return StreamingResponse(
+            _stream(Command(resume=answers), thread),
+            media_type="text/event-stream",
+            headers={"x-thread-id": thread_id},
+        )
+
+    @app.get("/sessions/{thread_id}")
+    async def snapshot(thread_id: str):
+        thread = _thread(thread_id)
+        _require(thread)
+        state = agent.get_state(thread)
+        messages = state.values.get("messages", [])
         return {
-            "phase": prog.get("phase"),
-            "next_prompt": prog.get("next_prompt"),
-            "config": values.get("config"),  # already a native dict
-            "report": values.get("report"),
+            "autonomy": state.values.get("autonomy"),
+            "pending_confirmations": [
+                {"interrupt": item.id, **item.value}
+                for item in state.interrupts
+            ],
+            "last_message": (
+                messages[-1].content if messages else None
+            ),
         }
 
     return app
