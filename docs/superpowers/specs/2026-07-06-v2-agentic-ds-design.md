@@ -12,7 +12,7 @@ The anchor use case, the thing every design decision is measured against:
 > "Retrain just Extra Trees with 500 estimators and compare it to the current best. If it wins, promote it."
 
 Stated in one line:
-a LangGraph `create_react_agent` becomes the graph's hub, owns a set of data-science tools (train, retrain-with-params, compare, inspect, report, monitor, promote), and decides which to call from the conversation - guarded by confirmation rails with an autonomous override.
+LangChain's `create_agent` (the maintained successor to the deprecated `langgraph.prebuilt.create_react_agent`) becomes the graph's hub, owns a set of data-science tools (train, retrain-with-params, compare, inspect, report, monitor, promote), and decides which to call from the conversation - guarded by confirmation rails with an autonomous override.
 
 Explicit non-goals for this slice:
 
@@ -44,8 +44,9 @@ Predictability for flexibility - the right trade for a delegatable agent.
 
 ## Architecture
 
-`create_react_agent` (from `langgraph.prebuilt`, the prebuilt available in the installed langgraph 1.2.7) is the hub.
-It is a ReAct loop: the chat model sees the conversation plus the bound tool schemas, emits tool calls, a `ToolNode` runs them, results feed back, and the loop continues until the model answers in prose.
+`create_agent` (from `langchain.agents`, langchain 1.3.x) is the hub.
+It is the maintained successor to `langgraph.prebuilt.create_react_agent`, which is deprecated since LangGraph v1.0; we install `langchain` and use `create_agent` rather than build a foundation on a deprecated prebuilt.
+It is a ReAct loop: the chat model sees the conversation plus the bound tool schemas, emits tool calls, a tool node runs them, results feed back, and the loop continues until the model answers in prose.
 
 ```
    new user message                                confirmation reply
@@ -53,7 +54,7 @@ It is a ReAct loop: the chat model sees the conversation plus the bound tool sch
               |                                            |
               v                                            v
    +----------------------+       tool call        [ interrupt() inside a
-   |  create_react_agent  | --------------------->   guarded tool, mid-loop ]
+   |     create_agent     | --------------------->   guarded tool, mid-loop ]
    |  (chat model + ReAct)| <---------------------
    +----------------------+       tool result
               |
@@ -63,7 +64,7 @@ It is a ReAct loop: the chat model sees the conversation plus the bound tool sch
 Two distinct mechanisms drive the graph, and the design keeps them separate (this is the subtlety a naive "resume on every turn" gets wrong):
 
 - **A new conversation turn is a fresh `invoke`** with a new `HumanMessage` on the *same* `thread_id`.
-  `create_react_agent` ends its run after the prose answer - it does not stay suspended waiting for the next message.
+  `create_agent` ends its run after the prose answer - it does not stay suspended waiting for the next message.
   The checkpointer preserves the full message history under the thread, so the next turn just appends a `HumanMessage` and re-invokes; the agent sees the whole conversation.
 - **`Command(resume=...)` is used *only* to answer a confirmation** raised by `interrupt()` inside a guarded tool mid-loop.
   It is never how a chat turn is delivered.
@@ -99,12 +100,12 @@ Config gains an optional model-name override; the defaults are a tool-capable mo
 ## State shrinks (and serialization gets safe by construction)
 
 V1's `AgentState` carried `event`, `config`, `train_state`, `report`, `alerts`, `error`, `log`.
-Under the agent, the graph's state is the **message history** (`create_react_agent`'s state) plus one extra field, `autonomy`, and a disk-backed model registry.
+Under the agent, the graph's state is the **message history** (`create_agent`'s state) plus one extra field, `autonomy`, and a disk-backed model registry.
 Config, training results, reports, and alerts become artifacts the tools read and write on disk - never graph-state fields.
 
-The custom state schema must subclass the prebuilt agent state, not bare `MessagesState`:
-`create_react_agent` in the installed LangGraph requires both `messages` **and** `remaining_steps`, and passing a schema missing `remaining_steps` raises `ValueError: Missing required key(s) {'remaining_steps'}`.
-So the schema is `class DSAgentState(langgraph.prebuilt.chat_agent_executor.AgentState): autonomy: str` - inheriting `messages` + `remaining_steps` and adding our one field.
+The custom state schema subclasses `create_agent`'s own state base, not a bare `MessagesState`:
+the schema is `class DSAgentState(langchain.agents.middleware.AgentState): autonomy: str` - it inherits the `messages` (and any bookkeeping keys `create_agent` needs) and adds our one field.
+`create_agent` uses `system_prompt=` (a string or `SystemMessage`) where the old prebuilt used `prompt=`; there is no `version` kwarg.
 
 This makes V1's hardest constraint disappear by construction.
 The msgpack checkpoint serializer (no pickle fallback) rejected DataFrames, estimators, and closures; V1 handled it with the `to_state()` discipline.
@@ -131,7 +132,7 @@ The `autonomy` mode is the exception: it is per-session and must survive across 
 | `run_monitor` | (none) | Step the active model's stored readings (`registry.readings(active_id)`) through it; emit alerts / mock tickets. Wraps `monitor`. Guarded because writing a ticket is the monitor's external *action*. | confirm |
 
 Invalid tool calls (bad model id, malformed hyperparameters) and a declined confirmation both **return** a descriptive string the agent can recover from - never a raised exception.
-This matters concretely: the installed LangGraph `ToolNode` only converts tool-*validation* errors into messages and re-raises anything else, so a custom exception from a denied confirmation would terminate the graph.
+This matters concretely: `create_agent`'s tool node only converts tool-*validation* errors into messages and re-raises anything else, so a custom exception from a denied confirmation would terminate the graph.
 Guarded tools therefore return the denial string rather than raising (see the rail helper below).
 
 Two integrity rules the tools enforce, because the agent will otherwise stumble into them:
@@ -211,11 +212,11 @@ Even so, each auto-approved action streams a notice (`{"type": "auto_approved", 
 
 **Autonomy is per-session state, not runtime config.**
 `config["configurable"]` is passed fresh on every `invoke`/`resume` and is *not* checkpointed, so storing autonomy there would silently revert to the default on the next request.
-Instead `autonomy` is written into checkpointed graph state when the session starts (`create_react_agent`'s state schema is extended with an `autonomy` field), and the rail reads it via `InjectedState` - so it persists for the life of the session without the client having to resend it.
+Instead `autonomy` is written into checkpointed graph state when the session starts (`create_agent`'s state schema is extended with an `autonomy` field), and the rail reads it via `InjectedState` - so it persists for the life of the session without the client having to resend it.
 The session-start value comes from the request (`--autonomous` on the CLI, the `autonomy` field on `POST /sessions`), defaulting from `get_settings()` (`SENTINEL_AUTONOMY=guarded|autonomous`, `guarded` default).
 
 The seam is a single helper used by every guarded tool.
-It **returns** on approval and **returns a denial string** on refusal - it never raises, because the default `ToolNode` would re-raise a custom exception and terminate the graph:
+It **returns** on approval and **returns a denial string** on refusal - it never raises, because `create_agent`'s tool node would re-raise a custom exception and terminate the graph:
 
 ```python
 def confirm(action: str, detail: str, autonomy: str) -> str | None:
@@ -239,7 +240,7 @@ def promote(model_id: str, state: Annotated[dict, InjectedState]) -> str:
 
 **Multiple confirmations in one turn.**
 The model can emit two guarded tool calls in a single response (e.g. `retrain` then `promote`).
-The v2 ReAct agent runs them as separate tool tasks, so both `interrupt()`s pend at once, and LangGraph then rejects a scalar `Command(resume="yes")` - it requires a map from interrupt id to answer.
+`create_agent` runs them as separate tool tasks, so both `interrupt()`s pend at once, and LangGraph then rejects a scalar `Command(resume="yes")` - it requires a map from interrupt id to answer.
 So the confirmation contract is id-addressed, not scalar:
 the `confirm` event carries the `interrupt` id (from `get_state(thread).interrupts`), and a resume supplies `Command(resume={<id>: "yes", ...})`.
 A scalar answer is accepted only as a convenience when exactly one confirmation is pending (the common case).
