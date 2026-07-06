@@ -146,3 +146,37 @@ def test_compare_across_configs_reevaluates(tmp_path, monkeypatch):
         },
     )
     assert "et-v1" in out and "et-v2" in out
+
+
+def test_inspect_leaderboard_exposes_runner_ups(tmp_path):
+    """The runner-up models from a training run are visible (with retrainable ids),
+    so "retrain the second-best" can resolve instead of "there is only one model"."""
+    tools, registry = _tools(tmp_path)
+    pkl = tmp_path / "lb.pkl"
+    pkl.write_bytes(b"m")
+    registry.register(
+        family="et",
+        model_path=pkl,
+        metrics={"rmse": 17.1, "mae": 12.0, "r2": 0.82},
+        leaderboard=[
+            {"id": "et", "Model": "Extra Trees Regressor", "RMSE": 17.1},
+            {"id": "gbr", "Model": "Gradient Boosting Regressor", "RMSE": 18.4},
+        ],
+        provenance={
+            "source": "train",
+            "model_id": "et",
+            "hyperparameters": {},
+            "config": {"rul_cap": 125, "window": 5},
+            "parent": None,
+        },
+        test_eval=[{"unit": 1, "cycle": 200, "RUL": 40.0, "s2": 1.5}],
+    )
+    out = tools["inspect"].invoke({"what": "leaderboard"})
+    # The second-best is named AND carries the id the agent would pass to retrain.
+    assert "Gradient Boosting Regressor" in out and "gbr" in out
+
+
+def test_inspect_leaderboard_without_active_model_is_graceful(tmp_path):
+    tools, _ = _tools(tmp_path)
+    out = tools["inspect"].invoke({"what": "leaderboard"})
+    assert "train one first" in out.lower()

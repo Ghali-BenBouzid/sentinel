@@ -60,9 +60,9 @@ def test_rank_models_orders_by_rmse_and_picks_lowest():
     # replaced compare_models(sort="RMSE").
     et = object()
     results = [
-        ("Linear Regression", {"RMSE": 25.0, "MAE": 20.0, "R2": 0.4}, object()),
-        ("Extra Trees Regressor", {"RMSE": 17.1, "MAE": 12.0, "R2": 0.82}, et),
-        ("LightGBM", {"RMSE": 18.4, "MAE": 13.0, "R2": 0.79}, object()),
+        ("Linear Regression", {"RMSE": 25.0, "MAE": 20.0, "R2": 0.4}, object(), "lr"),
+        ("Extra Trees Regressor", {"RMSE": 17.1, "MAE": 12.0, "R2": 0.82}, et, "et"),
+        ("LightGBM", {"RMSE": 18.4, "MAE": 13.0, "R2": 0.79}, object(), "lightgbm"),
     ]
 
     leaderboard, best_model, best_name = _rank_models(results)
@@ -72,3 +72,6 @@ def test_rank_models_orders_by_rmse_and_picks_lowest():
     # Leaderboard is best-first and carries the friendly name + its metrics.
     assert leaderboard["Model"].tolist() == ["Extra Trees Regressor", "LightGBM", "Linear Regression"]
     assert leaderboard.iloc[0]["RMSE"] == 17.1
+    # Each row also carries the retrainable PyCaret id, best-first, so the agent
+    # can retrain the second-best model ("lightgbm") by id, not just see its name.
+    assert leaderboard["id"].tolist() == ["et", "lightgbm", "lr"]

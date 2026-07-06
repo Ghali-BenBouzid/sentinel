@@ -54,16 +54,20 @@ def _regression_metrics(y_true, y_pred) -> dict[str, float]:
     }
 
 
-def _rank_models(results: list[tuple[str, dict, object]]) -> tuple[pd.DataFrame, object, str]:
+def _rank_models(results: list[tuple[str, dict, object, str]]) -> tuple[pd.DataFrame, object, str]:
     """Rank per-model CV results by RMSE (lower is better) and pick the winner.
 
-    `results` is one `(friendly_name, cv_metrics, fitted_model)` per trained model.
-    Returns the leaderboard frame (best first), the winning model, and its name.
+    `results` is one `(friendly_name, cv_metrics, fitted_model, model_id)` per
+    trained model. Returns the leaderboard frame (best first - each row carries the
+    retrainable PyCaret `id` and the friendly `Model` name, so runner-up models can
+    be retrained by id, not just admired by name), the winning model, and its name.
     Pure - no PyCaret - so the ranking that decides the winner is unit-testable.
     """
     ordered = sorted(results, key=lambda r: r[1]["RMSE"])
-    leaderboard = pd.DataFrame([{"Model": name, **metrics} for name, metrics, _ in ordered])
-    best_name, _, best_model = ordered[0]
+    leaderboard = pd.DataFrame(
+        [{"id": model_id, "Model": name, **metrics} for name, metrics, _, model_id in ordered]
+    )
+    best_name, _, best_model, _ = ordered[0]
     return leaderboard, best_model, best_name
 
 
@@ -116,7 +120,7 @@ def train_and_evaluate(
     name_of = models()["Name"].to_dict()  # model id -> friendly name ("et" -> "Extra Trees Regressor")
     candidate_ids = list(include) if include is not None else list(name_of)
 
-    results: list[tuple[str, dict, object]] = []
+    results: list[tuple[str, dict, object, str]] = []
     total = len(candidate_ids)
     for index, model_id in enumerate(candidate_ids, start=1):
         name = name_of.get(model_id, str(model_id))
@@ -128,7 +132,7 @@ def train_and_evaluate(
             continue
         mean = pull().loc["Mean"]  # fold-averaged CV metrics for this model
         cv_metrics = {col: float(mean[col]) for col in mean.index if pd.notna(mean[col])}
-        results.append((name, cv_metrics, model))
+        results.append((name, cv_metrics, model, model_id))
         if on_model_end is not None:
             on_model_end(
                 name, index, total,

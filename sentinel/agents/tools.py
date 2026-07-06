@@ -262,11 +262,27 @@ def make_tools(
 
     @tool
     def inspect(what: str) -> str:
-        """List models or inspect one model's provenance."""
+        """Inspect the system: the model list, the leaderboard, or a model's provenance.
+
+        - "registry" / "models" / "list": the active model and the registered ids.
+        - "leaderboard": the ranked model-comparison from the active model's training
+          run. Each row has a retrainable PyCaret `id`, the friendly `Model` name, and
+          CV metrics, so runner-up models are visible - e.g. to retrain the second-best,
+          read row index 1 and retrain its `id`.
+        - "<model_id>": that model's provenance JSON.
+        """
         if what in ("registry", "models", "list"):
             return (
                 f"active={registry.active()} models={registry.list()}"
             )
+        if what in ("leaderboard", "models_compared", "ranking"):
+            active = registry.active()
+            if active is None:
+                return "No active model yet; train one first to get a leaderboard."
+            leaderboard = registry.get(active)["metrics"].get("leaderboard", [])
+            if not leaderboard:
+                return "No leaderboard was recorded for the active model."
+            return json.dumps(leaderboard)
         try:
             return json.dumps(registry.provenance(what))
         except KeyError:

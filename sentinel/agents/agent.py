@@ -34,7 +34,11 @@ SYSTEM_PROMPT = (
     "The system confirms train, retrain, promote, delete, and run_monitor. Call "
     "the tool directly; respect a Declined result.\n"
     "Metrics are comparable only within one rul_cap/window configuration. The "
-    "compare tool handles re-evaluation.\n\n"
+    "compare tool handles re-evaluation.\n"
+    "A training run compares many model families but registers only the winner. To "
+    "act on a non-winner (e.g. retrain the second-best model from a comparison), "
+    "call inspect('leaderboard') to see the ranked models, then retrain by the "
+    "chosen row's 'id'.\n\n"
     "<glossary>\n"
     + domain_context.glossary()
     + "\n</glossary>"
