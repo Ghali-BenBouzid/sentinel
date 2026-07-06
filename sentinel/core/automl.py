@@ -168,3 +168,60 @@ def train_and_evaluate(
         model_path=model_path.with_suffix(".pkl"),
         metrics_path=metrics_path,
     )
+
+
+def train_one(
+    model_id: str,
+    hyperparameters: dict,
+    train_df: pd.DataFrame,
+    target: str,
+    test_df: pd.DataFrame,
+    artifacts_dir: str | Path = "artifacts",
+    ignore_features: list[str] | None = None,
+    session_id: int = 42,
+    fold: int = 3,
+    on_stage: Callable[..., None] | None = None,
+) -> TrainResult:
+    """Train one named model with explicit hyperparameters and persist it."""
+
+    def _stage(name: str, detail: str = "") -> None:
+        if on_stage is not None:
+            on_stage(name, detail)
+
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    ignore_features = ignore_features or []
+
+    setup(
+        data=train_df,
+        target=target,
+        session_id=session_id,
+        ignore_features=ignore_features,
+        fold=fold,
+        n_jobs=1,
+        verbose=False,
+    )
+    model = create_model(model_id, **hyperparameters)
+    final_model = finalize_model(model)
+
+    _stage("evaluating")
+    preds = predict_model(final_model, data=test_df)
+    y_pred = (
+        preds["prediction_label"]
+        if "prediction_label" in preds
+        else preds.iloc[:, -1]
+    )
+    metrics = _regression_metrics(test_df[target], y_pred)
+
+    _stage("saving")
+    model_path = artifacts_dir / f"retrain_{model_id}"
+    save_model(final_model, str(model_path))
+
+    leaderboard = pd.DataFrame([{"Model": model_id, **metrics}])
+    return TrainResult(
+        leaderboard=leaderboard,
+        best_model=final_model,
+        metrics=metrics,
+        model_path=model_path.with_suffix(".pkl"),
+        metrics_path=artifacts_dir / f"retrain_{model_id}_metrics.json",
+    )
