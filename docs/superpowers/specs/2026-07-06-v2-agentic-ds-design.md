@@ -99,8 +99,12 @@ Config gains an optional model-name override; the defaults are a tool-capable mo
 ## State shrinks (and serialization gets safe by construction)
 
 V1's `AgentState` carried `event`, `config`, `train_state`, `report`, `alerts`, `error`, `log`.
-Under the agent, the graph's state is the **message history** (`create_react_agent`'s `MessagesState`) plus a disk-backed model registry.
+Under the agent, the graph's state is the **message history** (`create_react_agent`'s state) plus one extra field, `autonomy`, and a disk-backed model registry.
 Config, training results, reports, and alerts become artifacts the tools read and write on disk - never graph-state fields.
+
+The custom state schema must subclass the prebuilt agent state, not bare `MessagesState`:
+`create_react_agent` in the installed LangGraph requires both `messages` **and** `remaining_steps`, and passing a schema missing `remaining_steps` raises `ValueError: Missing required key(s) {'remaining_steps'}`.
+So the schema is `class DSAgentState(langgraph.prebuilt.chat_agent_executor.AgentState): autonomy: str` - inheriting `messages` + `remaining_steps` and adding our one field.
 
 This makes V1's hardest constraint disappear by construction.
 The msgpack checkpoint serializer (no pickle fallback) rejected DataFrames, estimators, and closures; V1 handled it with the `to_state()` discipline.
@@ -119,7 +123,7 @@ The `autonomy` mode is the exception: it is per-session and must survive across 
 | `train` | `rul_cap?, window?, models?` | Full comparison; registers **the winner** as a loadable model and records the full leaderboard *metrics*; returns the leaderboard summary. Wraps `train_and_evaluate`. | confirm |
 | `retrain` | `model_id, hyperparameters, rul_cap?, window?` | Parameterized single-model train (NEW DS-core entrypoint); registers a candidate; returns its held-out metrics. | confirm |
 | `evaluate` | `model_id` | Held-out metrics for a registered model. | - |
-| `compare` | `model_id_a, model_id_b` | Side-by-side metrics + deltas, **only across a common evaluation config** (see below). | - |
+| `compare` | `model_id_a, model_id_b, rul_cap?, window?` | Side-by-side metrics + deltas, **only across a common evaluation config** (`rul_cap`/`window`, see below). | - |
 | `inspect` | `what` | Read-only: leaderboard / dataset stats / a model's params / the registry listing. | - |
 | `promote` | `model_id` | Set the registry's `active` model. | confirm |
 | `delete` | `model_id` | Remove a registered candidate; **refuses the active model** (see below). | confirm |
@@ -135,8 +139,9 @@ Two integrity rules the tools enforce, because the agent will otherwise stumble 
 - **Metrics are only comparable within one evaluation config.**
   `rul_cap` caps the RUL target and `window` changes the features, so a model trained under `rul_cap=100` has RMSE/MAE on a *different target scale* than one under `rul_cap=125` - a raw delta between them is meaningless and could promote a "better" number that is only better because its target was easier.
   Every model's `provenance.json` records its evaluation config (`rul_cap`, `window`).
-  `compare` refuses a direct delta when the two configs differ; instead it **re-evaluates both models on one common held-out target** (the active model's config, or a config the caller names) via `evaluate`, then deltas those.
-  Stored metrics are a fast path only when the configs already match.
+  When the two models' configs match, `compare` deltas their stored metrics directly (the fast path).
+  When they differ, it **re-evaluates both models on one common held-out target** via `evaluate` before deltaing.
+  The common config is chosen deterministically: the `rul_cap`/`window` the caller passes to `compare` if given, else the active model's config; if the configs differ *and* neither an explicit config nor an active model is available, `compare` returns a message asking the caller to name a `rul_cap`/`window` rather than guessing.
 - **The active model cannot be deleted out from under the system.**
   `registry.remove(id)` (and the `delete` tool) refuse to remove the currently-active model, returning a message telling the agent to promote another model first.
   This keeps `manifest.json.active` from ever pointing at a missing directory, which would break `write_report`, `evaluate`, and `run_monitor`.
@@ -232,6 +237,14 @@ def promote(model_id: str, state: Annotated[dict, InjectedState]) -> str:
     return f"Promoted {model_id}; it is now the active model."
 ```
 
+**Multiple confirmations in one turn.**
+The model can emit two guarded tool calls in a single response (e.g. `retrain` then `promote`).
+The v2 ReAct agent runs them as separate tool tasks, so both `interrupt()`s pend at once, and LangGraph then rejects a scalar `Command(resume="yes")` - it requires a map from interrupt id to answer.
+So the confirmation contract is id-addressed, not scalar:
+the `confirm` event carries the `interrupt` id (from `get_state(thread).interrupts`), and a resume supplies `Command(resume={<id>: "yes", ...})`.
+A scalar answer is accepted only as a convenience when exactly one confirmation is pending (the common case).
+Both transports read the pending interrupt ids from the checkpointer and echo them in the `confirm` event, so a client always answers the specific interrupt(s) rather than positionally.
+
 ## Surfaces: CLI and HTTP/SSE
 
 Both are in this slice.
@@ -240,16 +253,16 @@ Both drive the graph through the same two mechanisms (new-message `invoke` vs. c
 
 **CLI** (`python -m sentinel.agents`): a chat loop.
 Read a line and `invoke` the agent with it as a `HumanMessage`; stream tool-calls / stage events / the prose answer.
-If the run *interrupts* on a confirmation, prompt for `y/n` and `Command(resume=...)` to continue the *same* run; otherwise the run ends and we wait for the next line (a fresh `invoke`).
+If the run *interrupts* on one or more confirmations, prompt `y/n` for each pending interrupt and `Command(resume={id: answer})` to continue the *same* run; otherwise the run ends and we wait for the next line (a fresh `invoke`).
 `--autonomous` sets the session's autonomy at start.
 
 **HTTP/SSE** (`sentinel/api/app.py`): adapt the V1 surface to the agent.
 `POST /sessions` (optional `{"autonomy": "..."}`, `{"message": "..."}`) starts a session, sets autonomy in state, and streams until the run ends or interrupts.
 The endpoints mirror the two mechanisms explicitly rather than overloading one:
 `POST /sessions/{id}/message` (`{"message": "..."}`) delivers a new conversation turn (a fresh `invoke` appending a `HumanMessage`);
-`POST /sessions/{id}/resume` (`{"answer": "y"}`) answers a pending confirmation (`Command(resume=...)`).
-`GET /sessions/{id}` reads a snapshot from the checkpointer (including whether a confirmation is pending).
-The SSE event vocabulary extends V1's: `message` (agent prose), `tool_call` / `tool_result`, `stage` / `model_training` / `model_trained` (unchanged training progress), `confirm` (a rail awaiting y/n), `auto_approved`, `done`, `error`.
+`POST /sessions/{id}/resume` (`{"answers": {"<interrupt_id>": "y"}}`, or `{"answer": "y"}` when a single confirmation is pending) answers the pending confirmation(s) via `Command(resume=...)`.
+`GET /sessions/{id}` reads a snapshot from the checkpointer (including any pending confirmation interrupt ids).
+The SSE event vocabulary extends V1's: `message` (agent prose), `tool_call` / `tool_result`, `stage` / `model_training` / `model_trained` (unchanged training progress), `confirm` (a rail awaiting y/n, carrying its `interrupt` id), `auto_approved`, `done`, `error`.
 
 ## Testing (offline, same discipline as V1)
 
@@ -261,6 +274,7 @@ No live LLM, no PyCaret, no network - the whole agent runs on fakes.
 - **Registry round-trip**: `register` / `get` / `set_active` / `remove` / `load_predict` / `readings` on disk under `tmp_path`; `remove` refuses the active model.
 - **Comparable-metrics test**: `compare` of two models with different `rul_cap` re-evaluates on a common target rather than deltaing the stored (incomparable) numbers.
 - **Rail tests**: guarded mode `interrupt`s and a `no` makes the tool *return* a denial string (the graph continues, the active model is unchanged); autonomous mode skips the interrupt and streams `auto_approved`.
+- **Batched-confirmation test**: a `FakeChatModel` that emits two guarded calls in one turn produces two pending interrupts, and a mapped `Command(resume={id: answer})` resolves both - guarding against the scalar-resume failure.
 - **Autonomy persistence test**: a session started autonomous stays autonomous across a follow-up `invoke` (proves it is read from checkpointed state, not re-supplied config).
 - **End-to-end trajectory**: a scripted `FakeChatModel` drives "train -> retrain et -> compare -> promote" through the real graph + `MemorySaver` across *multiple* `invoke` turns, asserting history carries over and the registry ends with the promoted model active - the V2 analogue of V1's full-graph wiring test.
 
