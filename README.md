@@ -1,9 +1,8 @@
 # Sentinel
 
 A project bridging classical data science and agentic AI: a deterministic ML
-core (data prep, feature engineering, AutoML training/eval) that a later
-agentic layer will orchestrate to interview the user, supervise training,
-monitor incoming data, and report/act autonomously.
+core (data prep, feature engineering, AutoML training/eval) wrapped by a
+tool-calling data-scientist agent.
 The case study is NASA C-MAPSS turbofan **Remaining Useful Life (RUL)**
 prediction.
 
@@ -11,9 +10,10 @@ prediction.
 **FD001** subset, engineers rolling-window features, and runs PyCaret AutoML to
 train, compare, and evaluate an RUL regression model.
 
-**Milestone 2 (this branch) adds the agent layer**: a LangGraph graph that wraps
-the M1 core - an orchestrator plus interviewer / report-writer / monitor
-sub-agents - behind a small LLM provider seam. See "Agent layer (M2)" below.
+**Milestone 2 (this branch) adds the agent layer**: LangChain's `create_agent`
+reasoning hub owns typed data-science tools, a disk-backed model registry, and
+confirmation rails with an autonomous override.
+See "Agent layer (M2)" below.
 
 ## Layout
 
@@ -26,24 +26,25 @@ sentinel/
   pipeline.py    # end-to-end M1 entrypoint
   config.py      # 12-factor settings (pydantic-settings): provider choice + API keys from env/.env
   llm/
-    provider.py  # LLM seam: Protocol + AnthropicProvider + GroqProvider (config-selected)
+    provider.py  # config-selected LangChain chat-model factory
   agents/
-    state.py         # graph state + the config the interviewer collects
-    graph.py         # the StateGraph: orchestrator routing + node wiring
-    interviewer.py   # human-facing sub-agent (code owns agenda, LLM extracts)
+    agent.py         # create_agent hub + custom autonomy state
+    tools.py         # typed DS tools + confirmation rail
+    registry.py      # disk-backed, id-addressed model registry
+    state.py         # persisted run-configuration shape
     report_writer.py # TrainResult -> plain-language report (grounded, no-fabrication prompt)
     monitor.py       # steps through readings, decides alert/report/mock-action
     domain_context.py # extensible glossary (datasets/metrics) injected into the prompts
-    training.py      # thin wrapper that runs the M1 DS core from an InterviewConfig
-    __main__.py      # end-to-end runnable: interview -> train -> report -> monitor
+    training.py      # full comparison + parameterized retraining adapters
+    __main__.py      # guarded/autonomous agent chat loop
   api/
-    app.py           # FastAPI/SSE surface over the resumable graph (create_app)
+    app.py           # FastAPI/SSE message + confirmation-resume surface
 tests/
   test_core_helpers.py   # fast offline unit tests for the pure DS-core helpers
   test_agents.py         # fast offline tests for the agent layer (faked LLM + training)
 .env.example                     # template for the .env config (copy to .env, add your key)
 docs/learning/01-ds-core.md      # how the DS core fits together (learning note)
-docs/learning/02-agent-layer.md  # how the agent layer fits together (learning note)
+docs/learning/04-agentic-ds.md   # reasoning hub, tools, registry, and rails
 docs/pdm-agent-design.md         # the agent-layer design this milestone implements
 .github/workflows/ci.yml         # CI: uv sync + ruff + pytest on pushes/PRs to main
 ```
@@ -87,17 +88,30 @@ held-out FD001 test score of roughly **RMSE 17.1 / MAE 11.9 / R2 0.82**.
 
 ## Agent layer (M2)
 
-The agent layer wraps the M1 core in a LangGraph graph and drives it end to end:
-interview the user for config, train, write a plain-language report, then monitor
-held-out readings for alerts. See `docs/learning/02-agent-layer.md` for how it
-works and `docs/pdm-agent-design.md` for the design.
+The agent layer replaces the fixed event router with LangChain's
+`langchain.agents.create_agent`.
+The chat model sees the conversation and typed tool schemas, chooses which tool
+to call, receives the result, and continues reasoning until it answers in prose.
+
+The available tools are `save_config`, `train`, `retrain`, `evaluate`,
+`compare`, `inspect`, `promote`, `delete`, `write_report`, and `run_monitor`.
+Models live in `artifacts/models/` and are addressed by ids such as `et-v1`.
+The registry is the single source of truth for metrics, provenance, held-out
+readings, and which model is active.
+
+`train`, `retrain`, `promote`, `delete`, and `run_monitor` require confirmation
+in guarded mode.
+Autonomous mode skips those prompts while still streaming an `auto_approved`
+event for every guarded action.
+See `docs/learning/04-agentic-ds.md` for the implementation patterns.
 
 ### Choosing an LLM provider
 
-The graph never imports a vendor SDK - it calls the seam in
-`sentinel/llm/provider.py`, which reads its config from `sentinel/config.py`
-(pydantic-settings). Config comes from the environment **and** from a `.env`
-file (env wins over `.env`). Copy the template and fill in your key:
+The agent receives a LangChain chat model from `sentinel/llm/provider.py`.
+Vendor-specific imports remain confined to that file.
+Configuration comes from the environment and `.env` through
+`sentinel/config.py`, with environment values taking precedence.
+Copy the template and fill in your key:
 
 ```bash
 cp .env.example .env      # then edit .env and set your key
@@ -109,54 +123,48 @@ cp .env.example .env      # then edit .env and set your key
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `SENTINEL_LLM_PROVIDER` | `groq` (default, free tier - zero API cost) or `anthropic`.                  |
 | `GROQ_API_KEY`          | Free Groq key from <https://console.groq.com>. `GROK_API_KEY` also works as an alias. |
-| `ANTHROPIC_API_KEY`     | Claude key (Sonnet for the interviewer, Haiku for the report writer); only if provider is `anthropic`. |
+| `ANTHROPIC_API_KEY`     | Claude key; only required when the provider is `anthropic`. |
+| `SENTINEL_AUTONOMY`     | `guarded` (default) or `autonomous`. |
+| `SENTINEL_MODEL_SMART`  | Optional reasoning-model override. |
+| `SENTINEL_MODEL_CHEAP`  | Optional report-model override. |
 
 `.env` is gitignored - only `.env.example` is committed, so real keys are never
 checked in. Note: **Groq** (groq.com, fast Llama inference - what this app uses)
 is a different service from xAI's **Grok**; the key is for Groq, but a habitual
 `GROK_API_KEY` spelling is accepted too.
 
-### Run the agent graph end to end
+### Chat with the agent
 
 pydantic-settings loads `.env` automatically - no `export` needed:
 
 ```bash
-uv run python -m sentinel.agents           # scripted interview, runs unattended
-uv run python -m sentinel.agents --interactive   # answer the interview yourself
+uv run python -m sentinel.agents
+uv run python -m sentinel.agents --autonomous
 ```
 
-This runs the full interview -> train -> report -> monitor flow against FD001,
-prints the report and any monitor alerts, and writes mock maintenance tickets to
-`artifacts/tickets/`. Training reuses the M1 pipeline, so it downloads/caches
-FD001 and runs PyCaret exactly as `python -m sentinel.pipeline` does.
+The default is guarded mode.
+The agent converses until it has enough configuration, then uses tools for every
+training, comparison, reporting, promotion, deletion, and monitoring action.
+Training reuses the M1 pipeline, and monitor alerts write mock maintenance
+tickets under `artifacts/tickets/`.
 
 ### Run the API
 
-The graph is resumable (LangGraph `interrupt()` + a checkpointer), so it can be driven
-over HTTP one request per turn instead of one long-lived process. `sentinel/api/app.py`
-exposes it as a FastAPI/SSE surface:
+Conversation history and autonomy are checkpointed by LangGraph.
+New messages and confirmation replies are separate operations:
 
 ```bash
 uv run uvicorn "sentinel.api.app:create_app" --factory
 ```
 
-`POST /sessions` starts a new session and streams notify/report/prompt events (SSE) up
-to the first interrupt; `POST /sessions/{id}/resume` posts one answer (`{"answer": "..."}`)
-and streams on to the next interrupt or to done; `GET /sessions/{id}` reads a snapshot
-straight from the checkpointer, so a client can reconnect after losing the SSE stream.
-It uses the same provider config as the CLI (`SENTINEL_LLM_PROVIDER` + your key from
-`.env`), runs the real graph end to end, and writes the same mock tickets to
-`artifacts/tickets/`.
+- `POST /sessions` starts a session and optionally accepts `message` and `autonomy`.
+- `POST /sessions/{id}/message` appends a new conversation turn.
+- `POST /sessions/{id}/resume` answers pending confirmation ids.
+- `GET /sessions/{id}` returns autonomy, the last message, and pending confirmations.
 
-The SSE events a stream can carry: `prompt` (a question awaiting an answer),
-`notify` (a status or applied-default line), `training` (`phase` started/finished for
-the whole comparison), `stage` (a coarse training phase with a machine `stage` id and
-human `text`: `loading_data`, `winner_selected`, `evaluating`, `saving`,
-`loading_model` - so the seconds outside the model loop are not silent),
-`model_training` (one when the trainer *starts* a candidate model) and `model_trained`
-(one when it *finishes*, with its cross-validated `cv_metrics`) - both carry
-`index`/`total` (e.g. "3 of 11") so the long model comparison shows live per-model
-progress, `report` (the final report text), `done` (terminal), and `error`.
+Streams can emit `message`, `tool_call`, `tool_result`, `stage`,
+`model_training`, `model_trained`, `confirm`, `auto_approved`, `done`, and
+`error`.
 
 **Testing the streaming endpoints: use `curl -N` or a browser `EventSource`, not
 Swagger `/docs`.** Swagger buffers the entire `text/event-stream` and only renders it
@@ -166,18 +174,17 @@ hang. Watch events arrive live with:
 
 ```bash
 curl -N -X POST localhost:8000/sessions            # note the x-thread-id response header
+curl -N -X POST localhost:8000/sessions/<id>/message \
+     -H 'content-type: application/json' -d '{"message": "compare et-v1 and et-v2"}'
 curl -N -X POST localhost:8000/sessions/<id>/resume \
-     -H 'content-type: application/json' -d '{"answer": "yes, use defaults"}'
+     -H 'content-type: application/json' -d '{"answer": "yes"}'
 ```
 
 ## Tests, lint, and CI
 
-The unit tests in `tests/` are fast and fully offline. `test_core_helpers.py`
-exercises the pure DS-core helpers (RUL derivation, rolling-window
-featurization) on tiny synthetic frames; `test_agents.py` exercises the agent
-layer's deterministic parts (provider selection, graph routing, interviewer
-extraction, monitor threshold logic, full graph wiring) with the LLM and
-training stubbed out - no download, no model training, no live LLM call.
+The unit tests in `tests/` are fast and fully offline.
+They use a scripted fake chat model and fake training functions, so there is no
+download, PyCaret training run, network access, or live LLM call.
 
 ```bash
 uv run pytest        # run the tests
