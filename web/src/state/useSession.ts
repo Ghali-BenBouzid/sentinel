@@ -21,9 +21,11 @@ export interface SessionState {
 
 export type SessionAction =
   | { type: "start" }
+  | { type: "reset" }
   | { type: "user"; text: string }
   | { type: "event"; event: SentinelEvent }
   | { type: "hydrate"; messages: TranscriptMessage[] }
+  | { type: "setPending"; pending: Pending[] }
   | { type: "resolve"; interrupt: string };
 
 export const initialSession: SessionState = {
@@ -42,6 +44,8 @@ export function sessionReducer(
   switch (action.type) {
     case "start":
       return { ...state, streaming: true };
+    case "reset":
+      return initialSession;
     case "user":
       return {
         ...state,
@@ -60,6 +64,8 @@ export function sessionReducer(
           name: m.name,
         })),
       };
+    case "setPending":
+      return { ...state, pending: action.pending };
     case "resolve":
       return {
         ...state,

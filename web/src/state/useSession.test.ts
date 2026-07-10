@@ -49,4 +49,25 @@ describe("sessionReducer", () => {
     s = sessionReducer(s, { type: "resolve", interrupt: "i1" });
     expect(s.pending).toEqual([]);
   });
+
+  it("resets transcript, pending confirmations, and streaming", () => {
+    let s = sessionReducer(initialSession, { type: "user", text: "train" });
+    s = sessionReducer(s, {
+      type: "event",
+      event: {
+        event: "confirm",
+        data: { type: "confirm", tool: "train", detail: "rul", interrupt: "i1" },
+      },
+    });
+    s = sessionReducer(s, { type: "start" });
+    expect(sessionReducer(s, { type: "reset" })).toEqual(initialSession);
+  });
+
+  it("seeds pending confirmations from a hydrated snapshot", () => {
+    const s = sessionReducer(initialSession, {
+      type: "setPending",
+      pending: [{ interrupt: "i1", tool: "promote", detail: "et-v2" }],
+    });
+    expect(s.pending).toEqual([{ interrupt: "i1", tool: "promote", detail: "et-v2" }]);
+  });
 });
