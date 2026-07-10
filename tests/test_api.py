@@ -206,3 +206,16 @@ def test_autonomy_toggle_sets_value(tmp_path):
     assert response.json() == {"autonomy": "autonomous"}
     snap = _request(app, "GET", f"/sessions/{thread_id}").json()
     assert snap["autonomy"] == "autonomous"
+
+
+def test_list_sessions(tmp_path):
+    app = _app(tmp_path)
+    a = _start_session(app)
+    b = _start_session(app)
+    response = _request(app, "GET", "/sessions")
+    assert response.status_code == 200
+    sessions = response.json()["sessions"]
+    ids = {s["thread_id"] for s in sessions}
+    assert {a, b} <= ids
+    for s in sessions:
+        assert set(s) == {"thread_id", "autonomy", "last_message"}

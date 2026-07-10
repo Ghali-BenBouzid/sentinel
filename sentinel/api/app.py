@@ -144,6 +144,31 @@ def create_app(
             headers={"x-thread-id": thread_id},
         )
 
+    @app.get("/sessions")
+    async def list_sessions():
+        seen: dict[str, dict] = {}
+        for item in agent.checkpointer.list(None):
+            tid = item.config["configurable"]["thread_id"]
+            if tid in seen:
+                continue
+            state = agent.get_state(_thread(tid))
+            messages = state.values.get("messages", [])
+            seen[tid] = {
+                "thread_id": tid,
+                "autonomy": state.values.get("autonomy"),
+                "last_message": (
+                    messages[-1].content if messages else None
+                ),
+                "_ts": state.created_at or "",
+            }
+        ordered = sorted(seen.values(), key=lambda s: s["_ts"], reverse=True)
+        return {
+            "sessions": [
+                {k: v for k, v in s.items() if k != "_ts"}
+                for s in ordered
+            ]
+        }
+
     @app.post("/sessions/{thread_id}/message")
     async def message(thread_id: str, body: dict):
         thread = _thread(thread_id)
