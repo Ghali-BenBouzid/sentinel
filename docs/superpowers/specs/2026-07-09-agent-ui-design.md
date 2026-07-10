@@ -131,8 +131,17 @@ The active thread id is React state, persisted to `localStorage` so a reload res
 
 ### Event types (from the backend SSE stream)
 
-`message`, `tool_call`, `tool_result`, `confirm`, `error`, `done`.
-The `confirm` event carries the interrupt value plus its `interrupt` id.
+Verified against the real emitter in `sentinel/api/app.py` (`_sse(event, data)` -> `data: {"event", "data"}\n\n`):
+
+- `message` -> `{text}` - the **whole** `AIMessage.content` for that step (not token deltas). One bubble per event.
+- `tool_call` -> `{name, args}`.
+- `tool_result` -> `{name, text}`.
+- `confirm` -> `{type: "confirm", tool, detail, interrupt}` - the field is **`tool`** (the action name, e.g. `promote`), not `action`. Emitted **in place of** `done`, so it is a terminal event that must also clear `streaming`.
+- `error` -> `{message}`. Terminal.
+- `done` -> `{}`. Terminal.
+- **Custom pass-through events** - the backend forwards any graph `custom` event by its `type`: `notify`, `auto_approved` (`{type, tool, detail}`, fired when a guarded action is auto-approved in autonomous mode), and training progress (`stage`, `model_training`, `model_trained`). The client must not crash on unknown event names; known progress events render as a progress line, the rest are ignored.
+
+Because the vocabulary is open-ended, `SentinelEvent` types the known events and falls back to a generic `{event: string; data: Record<string, unknown>}` for the rest.
 
 ## Data flow
 
@@ -141,13 +150,14 @@ The `confirm` event carries the interrupt value plus its `interrupt` id.
 1. User submits text -> reducer appends a `user` message, sets `streaming: true`.
 2. Client POSTs to `/sessions/{id}/message` (or `/sessions` for the first turn, capturing `x-thread-id` from the response header).
 3. `parseSSEStream(response)` yields events; the loop dispatches each into the reducer:
-   - `message` -> append/extend an `agent` bubble
+   - `message` -> append one `agent` bubble (whole content)
    - `tool_call` -> append a `tool_call` bubble (name + args, collapsed)
    - `tool_result` -> append a `tool_result` bubble
-   - `confirm` -> push into `pendingConfirmations` (id + action + detail)
-   - `error` -> append an `error` bubble, stop streaming
-   - `done` -> clear `streaming`
-4. Stream ends -> if `pendingConfirmations` is non-empty, `ChatView` renders `ConfirmCard`s inline at the bottom of the transcript.
+   - `confirm` -> push into `pendingConfirmations` (`{interrupt, tool, detail}`) **and** clear `streaming` (terminal)
+   - `error` -> append an `error` bubble, clear `streaming` (terminal)
+   - `done` -> clear `streaming` (terminal)
+   - progress events (`stage`/`model_training`/`model_trained`) -> update a single live progress line, not a bubble; `notify`/`auto_approved`/other -> info line or ignore
+4. Stream ends -> if `pendingConfirmations` is non-empty, `ChatView` renders `ConfirmCard`s inline at the bottom of the transcript. If the stream ends with **no** terminal event (`done`/`confirm`/`error`), treat it as a truncated-stream error (surface an error bubble, clear `streaming`).
 
 ### Resolving a confirmation
 
@@ -168,9 +178,12 @@ These are not part of the SSE turn.
 
 ### Session switching
 
-Selecting a thread in the sidebar loads its transcript via the extended `GET /sessions/{id}` (which now returns the full `messages` array).
+Selecting a thread in the sidebar loads its transcript via the extended `GET /sessions/{id}` (which now returns the full `messages` array) and seeds `pendingConfirmations` from the snapshot's `pending_confirmations` (each `{interrupt, tool, detail}`).
 The UI hydrates the full transcript; new turns append live.
 The composer is disabled while `streaming: true`.
+
+Switching threads mid-stream must not leak events from the old session into the new one.
+A single active `AbortController` is aborted on switch (and on unmount), so the in-flight `fetch`/reader is cancelled before the new session's stream starts.
 
 ## Error handling
 
@@ -180,6 +193,14 @@ The composer is disabled while `streaming: true`.
 - Non-2xx from a plain fetch (404 unknown session, 400 bad autonomy value) -> thrown, shown as an inline error near the relevant control, not a transcript bubble.
 - Confirmation buttons disabled during an in-flight resume.
 - Composer disabled during streaming.
+- A stream that ends with no terminal event (`done`/`confirm`/`error`) is treated as a truncated-stream error.
+
+### Empty states (defined, not incidental)
+
+- No sessions yet -> sidebar shows a "Start your first session" prompt; the composer starts a new thread.
+- Fresh session, no messages -> empty transcript with a placeholder, composer enabled.
+- Leaderboard before any training -> `{active: null, leaderboard: []}` renders an explicit "No models trained yet" panel, not a blank table.
+- Session-load 404 (thread gone) -> inline error in the sidebar, fall back to a new session.
 
 ## Testing
 
@@ -187,10 +208,10 @@ Kept proportional - this is a scaffold-and-handoff, not a test-heavy deliverable
 
 - `sse.ts` - unit test the parser: feed a chunked byte stream (including a `data:` line split across chunk boundaries) and assert the yielded typed events.
   This is the one piece with real parsing logic, so it gets the one real frontend test.
-- `useSession.ts` reducer - a couple of assertions: a `message` then `done` sequence produces the right transcript; a `confirm` event populates pending.
+- `useSession.ts` reducer - a couple of assertions: a `message` then `done` sequence produces the right transcript; a `confirm` event populates pending **and** clears streaming.
   Pure function, no DOM.
-- Backend - extend the test suite (`tests/test_agents.py` or a small `tests/test_api.py`) with FastAPI `TestClient` checks for the new/changed endpoints: list sessions, autonomy toggle validation (reject a bad value), leaderboard empty-state, snapshot returns messages.
-  Offline, using the existing fake-LLM fixtures.
+- Backend - **extend the existing `tests/test_api.py`** (the V2 FastAPI/SSE E2E test that already exists on this branch) with `TestClient` checks for the new/changed endpoints: list sessions, autonomy toggle validation (reject a bad value), leaderboard empty-state, snapshot returns messages.
+  Reuse the offline fixtures already in **`tests/fakes.py`** and the `configurable_factory` seam - do **not** invent a new fake factory (the earlier plan's `_fake_factory` still called the real chat model; it was not actually offline).
 - No component/E2E framework in scope for the handoff.
   Codex can add Playwright later if wanted.
   `ponytail:` deferred.
