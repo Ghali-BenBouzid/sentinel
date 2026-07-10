@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import * as client from "./api/client";
+import { AutonomyToggle } from "./components/AutonomyToggle";
 import { ChatView } from "./components/ChatView";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { initialSession, Pending, sessionReducer } from "./state/useSession";
@@ -70,6 +71,13 @@ export default function App() {
         onNew={newSession}
       />
       <div className="main-column">
+        <header className="app-header">
+          <div>
+            <strong>{threadId ? "Active session" : "New session"}</strong>
+            {threadId ? <span>{threadId.slice(0, 8)}</span> : null}
+          </div>
+          <AutonomyToggle threadId={threadId} />
+        </header>
         {loadError ? <p className="load-error">{loadError}</p> : null}
         <ChatView
           state={state}
