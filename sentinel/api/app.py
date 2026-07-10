@@ -39,6 +39,30 @@ def _sse(event: str, data) -> str:
     )
 
 
+def _transcript(messages) -> list[dict]:
+    out: list[dict] = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            out.append({"role": "user", "content": message.content})
+        elif isinstance(message, AIMessage):
+            entry = {"role": "agent", "content": message.content}
+            if message.tool_calls:
+                entry["tool_calls"] = [
+                    {"name": c["name"], "args": c["args"]}
+                    for c in message.tool_calls
+                ]
+            out.append(entry)
+        elif isinstance(message, ToolMessage):
+            out.append(
+                {
+                    "role": "tool_result",
+                    "content": message.content,
+                    "name": message.name,
+                }
+            )
+    return out
+
+
 def create_app(
     agent_factory=None, checkpointer=None, models_dir="artifacts/models"
 ) -> FastAPI:
@@ -234,6 +258,7 @@ def create_app(
             "last_message": (
                 messages[-1].content if messages else None
             ),
+            "messages": _transcript(messages),
         }
 
     @app.get("/sessions/{thread_id}/leaderboard")

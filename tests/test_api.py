@@ -219,3 +219,14 @@ def test_list_sessions(tmp_path):
     assert {a, b} <= ids
     for s in sessions:
         assert set(s) == {"thread_id", "autonomy", "last_message"}
+
+
+def test_snapshot_returns_transcript(tmp_path):
+    app = _app(tmp_path)
+    thread_id = _start_session(app, message="train")
+    snap = _request(app, "GET", f"/sessions/{thread_id}").json()
+    assert "messages" in snap
+    assert snap["messages"][0]["role"] == "user"
+    assert snap["messages"][0]["content"] == "train"
+    for m in snap["messages"]:
+        assert m["role"] in ("user", "agent", "tool_result")
