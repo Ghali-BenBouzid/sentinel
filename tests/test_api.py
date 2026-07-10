@@ -77,6 +77,7 @@ def _app(tmp_path):
     return create_app(
         agent_factory=factory,
         checkpointer=MemorySaver(),
+        models_dir=str(tmp_path / "models"),
     )
 
 
@@ -157,3 +158,21 @@ def test_unknown_thread_404(tmp_path):
         ).status_code
         == 404
     )
+
+
+def test_leaderboard_empty_state(tmp_path):
+    app = _app(tmp_path)
+    response = _request(app, "GET", "/sessions/whatever/leaderboard")
+    assert response.status_code == 200
+    assert response.json() == {"active": None, "leaderboard": []}
+
+
+def test_cors_header_present(tmp_path):
+    app = _app(tmp_path)
+    response = _request(
+        app,
+        "GET",
+        "/sessions/x/leaderboard",
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"

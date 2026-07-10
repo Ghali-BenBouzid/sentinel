@@ -9,11 +9,13 @@ import json
 import uuid
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from ..agents.agent import build_agent
+from ..agents.registry import Registry
 from ..agents.training import run_retraining, run_training
 from ..config import get_settings
 from ..llm.provider import get_chat_model
@@ -37,9 +39,19 @@ def _sse(event: str, data) -> str:
     )
 
 
-def create_app(agent_factory=None, checkpointer=None) -> FastAPI:
+def create_app(
+    agent_factory=None, checkpointer=None, models_dir="artifacts/models"
+) -> FastAPI:
     """Build the API around one process-lifetime compiled agent."""
     app = FastAPI(title="Sentinel V2")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["x-thread-id"],
+    )
+    registry = Registry(models_dir)
     factory = agent_factory or _default_factory
     agent = factory(checkpointer)
 
@@ -185,5 +197,13 @@ def create_app(agent_factory=None, checkpointer=None) -> FastAPI:
                 messages[-1].content if messages else None
             ),
         }
+
+    @app.get("/sessions/{thread_id}/leaderboard")
+    async def leaderboard(thread_id: str):
+        active = registry.active()
+        if active is None:
+            return {"active": None, "leaderboard": []}
+        rows = registry.get(active)["metrics"].get("leaderboard", [])
+        return {"active": active, "leaderboard": rows}
 
     return app
