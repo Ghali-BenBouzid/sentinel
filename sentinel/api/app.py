@@ -181,6 +181,19 @@ def create_app(
             headers={"x-thread-id": thread_id},
         )
 
+    @app.post("/sessions/{thread_id}/autonomy")
+    async def set_autonomy(thread_id: str, body: dict):
+        thread = _thread(thread_id)
+        _require(thread)
+        value = body.get("autonomy")
+        if value not in ("guarded", "autonomous"):
+            raise HTTPException(
+                status_code=400,
+                detail="autonomy must be 'guarded' or 'autonomous'",
+            )
+        agent.update_state(thread, {"autonomy": value})
+        return {"autonomy": value}
+
     @app.get("/sessions/{thread_id}")
     async def snapshot(thread_id: str):
         thread = _thread(thread_id)

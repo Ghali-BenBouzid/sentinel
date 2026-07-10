@@ -92,6 +92,15 @@ def _request(app, method, path, **kwargs):
     return asyncio.run(send())
 
 
+def _start_session(app, message="train", autonomy="guarded") -> str:
+    response = _request(
+        app, "POST", "/sessions",
+        json={"message": message, "autonomy": autonomy},
+    )
+    list(_sse_events(response))
+    return response.headers["x-thread-id"]
+
+
 def test_autonomous_session_trains_end_to_end(tmp_path):
     app = _app(tmp_path)
     response = _request(
@@ -176,3 +185,24 @@ def test_cors_header_present(tmp_path):
         headers={"Origin": "http://localhost:5173"},
     )
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_autonomy_toggle_rejects_bad_value(tmp_path):
+    app = _app(tmp_path)
+    thread_id = _start_session(app)
+    response = _request(
+        app, "POST", f"/sessions/{thread_id}/autonomy", json={"autonomy": "banana"}
+    )
+    assert response.status_code == 400
+
+
+def test_autonomy_toggle_sets_value(tmp_path):
+    app = _app(tmp_path)
+    thread_id = _start_session(app, autonomy="guarded")
+    response = _request(
+        app, "POST", f"/sessions/{thread_id}/autonomy", json={"autonomy": "autonomous"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"autonomy": "autonomous"}
+    snap = _request(app, "GET", f"/sessions/{thread_id}").json()
+    assert snap["autonomy"] == "autonomous"
