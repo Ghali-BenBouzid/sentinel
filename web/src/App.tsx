@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import * as client from "./api/client";
 import { AutonomyToggle } from "./components/AutonomyToggle";
 import { ChatView } from "./components/ChatView";
+import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { initialSession, Pending, sessionReducer } from "./state/useSession";
 import "./styles.css";
@@ -79,15 +80,18 @@ export default function App() {
           <AutonomyToggle threadId={threadId} />
         </header>
         {loadError ? <p className="load-error">{loadError}</p> : null}
-        <ChatView
-          state={state}
-          dispatch={dispatch}
-          threadId={threadId}
-          setThreadId={setThreadId}
-          streamAbort={streamAbort}
-          onSessionStarted={() => setRefreshKey((key) => key + 1)}
-          onTurnFinished={() => setRefreshKey((key) => key + 1)}
-        />
+        <div className="workspace">
+          <ChatView
+            state={state}
+            dispatch={dispatch}
+            threadId={threadId}
+            setThreadId={setThreadId}
+            streamAbort={streamAbort}
+            onSessionStarted={() => setRefreshKey((key) => key + 1)}
+            onTurnFinished={() => setRefreshKey((key) => key + 1)}
+          />
+          <LeaderboardPanel threadId={threadId} />
+        </div>
       </div>
     </main>
   );
