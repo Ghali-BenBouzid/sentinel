@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as client from "../api/client";
 import type { SessionAction, SessionState } from "../state/useSession";
 import { consumeStream } from "../state/useStream";
+import { ConfirmCard } from "./ConfirmCard";
 import { Message } from "./Message";
 
 interface ChatViewProps {
@@ -24,6 +25,7 @@ export function ChatView({
   onTurnFinished,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
+  const [resumeBusy, setResumeBusy] = useState(false);
 
   async function send() {
     const text = input.trim();
@@ -50,14 +52,19 @@ export function ChatView({
   }
 
   async function answer(interrupt: string, value: "yes" | "no") {
-    if (!threadId) return;
+    if (!threadId || resumeBusy) return;
+    setResumeBusy(true);
     dispatch({ type: "resolve", interrupt });
     const controller = new AbortController();
     streamAbort.current = controller;
-    const response = await client.resume(threadId, { [interrupt]: value }, controller.signal);
-    await consumeStream(response, dispatch);
-    streamAbort.current = null;
-    onTurnFinished();
+    try {
+      const response = await client.resume(threadId, { [interrupt]: value }, controller.signal);
+      await consumeStream(response, dispatch);
+      streamAbort.current = null;
+      onTurnFinished();
+    } finally {
+      setResumeBusy(false);
+    }
   }
 
   return (
@@ -67,13 +74,12 @@ export function ChatView({
           <Message key={bubble.id} bubble={bubble} />
         ))}
         {state.pending.map((p) => (
-          <div key={p.interrupt} className="confirm">
-            <span>
-              {p.tool} {p.detail}?
-            </span>
-            <button onClick={() => answer(p.interrupt, "yes")}>Yes</button>
-            <button onClick={() => answer(p.interrupt, "no")}>No</button>
-          </div>
+          <ConfirmCard
+            key={p.interrupt}
+            pending={p}
+            busy={resumeBusy}
+            onAnswer={(value) => answer(p.interrupt, value)}
+          />
         ))}
       </section>
       <div className="composer">
