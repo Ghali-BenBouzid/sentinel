@@ -11,6 +11,7 @@ export interface Pending {
   interrupt: string;
   tool: string;
   detail: string;
+  decision: "yes" | "no" | null;
 }
 
 export interface SessionState {
@@ -26,7 +27,8 @@ export type SessionAction =
   | { type: "event"; event: SentinelEvent }
   | { type: "hydrate"; messages: TranscriptMessage[] }
   | { type: "setPending"; pending: Pending[] }
-  | { type: "resolve"; interrupt: string };
+  | { type: "choose"; interrupt: string; decision: "yes" | "no" }
+  | { type: "resolveAll" };
 
 export const initialSession: SessionState = {
   transcript: [],
@@ -66,11 +68,15 @@ export function sessionReducer(
       };
     case "setPending":
       return { ...state, pending: action.pending };
-    case "resolve":
+    case "choose":
       return {
         ...state,
-        pending: state.pending.filter((p) => p.interrupt !== action.interrupt),
+        pending: state.pending.map((p) =>
+          p.interrupt === action.interrupt ? { ...p, decision: action.decision } : p,
+        ),
       };
+    case "resolveAll":
+      return { ...state, pending: [] };
     case "event":
       return applyEvent(state, action.event);
   }
@@ -101,7 +107,7 @@ function applyEvent(state: SessionState, ev: SentinelEvent): SessionState {
         streaming: false,
         pending: [
           ...state.pending,
-          { interrupt: d.interrupt, tool: d.tool, detail: d.detail },
+          { interrupt: d.interrupt, tool: d.tool, detail: d.detail, decision: null },
         ],
       };
     }

@@ -26,7 +26,9 @@ describe("sessionReducer", () => {
         data: { type: "confirm", tool: "promote", detail: "et-v2", interrupt: "i1" },
       },
     });
-    expect(s.pending).toEqual([{ interrupt: "i1", tool: "promote", detail: "et-v2" }]);
+    expect(s.pending).toEqual([
+      { interrupt: "i1", tool: "promote", detail: "et-v2", decision: null },
+    ]);
     expect(s.streaming).toBe(false);
   });
 
@@ -38,7 +40,7 @@ describe("sessionReducer", () => {
     expect(s.transcript).toEqual([]);
   });
 
-  it("removes a pending confirmation on resolve", () => {
+  it("clears pending confirmations on resolveAll", () => {
     let s = sessionReducer(initialSession, {
       type: "event",
       event: {
@@ -46,7 +48,7 @@ describe("sessionReducer", () => {
         data: { type: "confirm", tool: "delete", detail: "et-v1", interrupt: "i1" },
       },
     });
-    s = sessionReducer(s, { type: "resolve", interrupt: "i1" });
+    s = sessionReducer(s, { type: "resolveAll" });
     expect(s.pending).toEqual([]);
   });
 
@@ -66,8 +68,35 @@ describe("sessionReducer", () => {
   it("seeds pending confirmations from a hydrated snapshot", () => {
     const s = sessionReducer(initialSession, {
       type: "setPending",
-      pending: [{ interrupt: "i1", tool: "promote", detail: "et-v2" }],
+      pending: [{ interrupt: "i1", tool: "promote", detail: "et-v2", decision: null }],
     });
-    expect(s.pending).toEqual([{ interrupt: "i1", tool: "promote", detail: "et-v2" }]);
+    expect(s.pending).toEqual([
+      { interrupt: "i1", tool: "promote", detail: "et-v2", decision: null },
+    ]);
+  });
+});
+
+describe("choose/resolveAll", () => {
+  it("records a local decision without removing the pending card", () => {
+    const withPending = sessionReducer(initialSession, {
+      type: "event",
+      event: { event: "confirm", data: { interrupt: "abc:0", tool: "train", detail: "{}" } },
+    });
+    const chosen = sessionReducer(withPending, {
+      type: "choose",
+      interrupt: "abc:0",
+      decision: "yes",
+    });
+    expect(chosen.pending).toHaveLength(1);
+    expect(chosen.pending[0].decision).toBe("yes");
+  });
+
+  it("resolveAll clears every pending card regardless of decision state", () => {
+    const withPending = sessionReducer(initialSession, {
+      type: "event",
+      event: { event: "confirm", data: { interrupt: "abc:0", tool: "train", detail: "{}" } },
+    });
+    const cleared = sessionReducer(withPending, { type: "resolveAll" });
+    expect(cleared.pending).toHaveLength(0);
   });
 });

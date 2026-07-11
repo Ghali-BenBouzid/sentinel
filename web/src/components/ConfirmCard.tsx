@@ -2,11 +2,11 @@ import type { Pending } from "../state/useSession";
 
 interface ConfirmCardProps {
   pending: Pending;
-  onAnswer: (value: "yes" | "no") => void;
-  busy: boolean;
+  onChoose: (value: "yes" | "no") => void;
+  disabled: boolean;
 }
 
-export function ConfirmCard({ pending, onAnswer, busy }: ConfirmCardProps) {
+export function ConfirmCard({ pending, onChoose, disabled }: ConfirmCardProps) {
   return (
     <div className="confirm">
       <div>
@@ -14,10 +14,22 @@ export function ConfirmCard({ pending, onAnswer, busy }: ConfirmCardProps) {
         <p>{pending.detail}</p>
       </div>
       <div className="confirm-actions">
-        <button type="button" onClick={() => onAnswer("yes")} disabled={busy}>
+        <button
+          type="button"
+          onClick={() => onChoose("yes")}
+          disabled={disabled}
+          aria-pressed={pending.decision === "yes"}
+          className={pending.decision === "yes" ? "chosen" : undefined}
+        >
           Yes
         </button>
-        <button type="button" onClick={() => onAnswer("no")} disabled={busy}>
+        <button
+          type="button"
+          onClick={() => onChoose("no")}
+          disabled={disabled}
+          aria-pressed={pending.decision === "no"}
+          className={pending.decision === "no" ? "chosen" : undefined}
+        >
           No
         </button>
       </div>

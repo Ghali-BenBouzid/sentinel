@@ -51,14 +51,22 @@ export function ChatView({
     onTurnFinished();
   }
 
-  async function answer(interrupt: string, value: "yes" | "no") {
+  function choose(interrupt: string, value: "yes" | "no") {
+    if (resumeBusy) return;
+    dispatch({ type: "choose", interrupt, decision: value });
+  }
+
+  async function submitDecisions() {
     if (!threadId || resumeBusy) return;
+    if (state.pending.length === 0 || !state.pending.every((p) => p.decision !== null)) return;
     setResumeBusy(true);
-    dispatch({ type: "resolve", interrupt });
+    const answers: Record<string, string> = {};
+    for (const p of state.pending) answers[p.interrupt] = p.decision as string;
     const controller = new AbortController();
     streamAbort.current = controller;
+    dispatch({ type: "resolveAll" });
     try {
-      const response = await client.resume(threadId, { [interrupt]: value }, controller.signal);
+      const response = await client.resume(threadId, answers, controller.signal);
       await consumeStream(response, dispatch);
       streamAbort.current = null;
       onTurnFinished();
@@ -77,10 +85,19 @@ export function ChatView({
           <ConfirmCard
             key={p.interrupt}
             pending={p}
-            busy={resumeBusy}
-            onAnswer={(value) => answer(p.interrupt, value)}
+            disabled={resumeBusy}
+            onChoose={(value) => choose(p.interrupt, value)}
           />
         ))}
+        {state.pending.length > 0 && (
+          <button
+            type="button"
+            onClick={submitDecisions}
+            disabled={resumeBusy || !state.pending.every((p) => p.decision !== null)}
+          >
+            Submit responses
+          </button>
+        )}
       </section>
       <div className="composer">
         <input
