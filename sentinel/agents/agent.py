@@ -5,7 +5,11 @@ import sqlite3
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentState
+from langchain.agents.middleware import (
+    AgentState,
+    ModelCallLimitMiddleware,
+    ToolCallLimitMiddleware,
+)
 
 from ..config import get_settings
 from . import domain_context
@@ -77,10 +81,22 @@ def build_agent(
     )
     if checkpointer is None:
         checkpointer = _default_checkpointer()
+    settings = get_settings()
+    middleware = [
+        ModelCallLimitMiddleware(
+            thread_limit=settings.sentinel_model_call_thread_limit,
+            run_limit=settings.sentinel_model_call_run_limit,
+        ),
+        ToolCallLimitMiddleware(
+            thread_limit=settings.sentinel_tool_call_thread_limit,
+            run_limit=settings.sentinel_tool_call_run_limit,
+        ),
+    ]
     return create_agent(
         chat_model,
         tools,
         system_prompt=SYSTEM_PROMPT,
         state_schema=DSAgentState,
         checkpointer=checkpointer,
+        middleware=middleware,
     )

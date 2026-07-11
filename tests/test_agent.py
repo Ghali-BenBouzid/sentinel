@@ -160,3 +160,29 @@ def test_guarded_confirmation_interrupt_and_mapped_resume(tmp_path):
         Command(resume={state.interrupts[0].id: "yes"}), thread
     )
     assert "Trained" in final["messages"][-1].content
+
+
+def test_model_call_limit_ends_run_instead_of_looping_forever(tmp_path):
+    """A model stuck calling a tool forever stops at the configured limit."""
+    import os
+
+    from sentinel.config import get_settings
+
+    os.environ["SENTINEL_MODEL_CALL_RUN_LIMIT"] = "3"
+    get_settings.cache_clear()
+    try:
+        scripted = [
+            AIMessage(content="", tool_calls=[_tc("inspect", {"what": "registry"}, f"c{i}")])
+            for i in range(10)
+        ]
+        agent = _build(tmp_path, scripted)
+        thread = {"configurable": {"thread_id": "limit-test"}}
+        final = agent.invoke(
+            {"messages": [HumanMessage("loop forever")], "autonomy": "autonomous"},
+            thread,
+        )
+        model_messages = [m for m in final["messages"] if isinstance(m, AIMessage)]
+        assert len(model_messages) <= 4
+    finally:
+        del os.environ["SENTINEL_MODEL_CALL_RUN_LIMIT"]
+        get_settings.cache_clear()
