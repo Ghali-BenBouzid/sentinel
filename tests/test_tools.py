@@ -1,4 +1,4 @@
-"""The DS tools: registry-backed, rail-guarded, string-returning."""
+"""The DS tools: registry-backed and string-returning."""
 from __future__ import annotations
 
 import pandas as pd
@@ -52,26 +52,8 @@ def _tools(tmp_path):
     return {tool.name: tool for tool in tools}, registry
 
 
-def _invoke(tool, args, autonomy="autonomous"):
-    """Call a structured tool including the InjectedState."""
-    return tool.invoke({**args, "state": {"autonomy": autonomy}})
-
-
-def test_confirm_autonomous_proceeds_and_streams(monkeypatch):
-    from sentinel.agents import tools as T
-
-    seen = []
-    monkeypatch.setattr(T, "get_stream_writer", lambda: seen.append)
-    assert T.confirm("promote", "et-v1", "autonomous") is None
-    assert seen and seen[0]["type"] == "auto_approved"
-
-
-def test_confirm_guarded_declined_returns_string(monkeypatch):
-    from sentinel.agents import tools as T
-
-    monkeypatch.setattr(T, "interrupt", lambda payload: "no")
-    out = T.confirm("promote", "et-v1", "guarded")
-    assert isinstance(out, str) and "did not approve" in out
+def _invoke(tool, args):
+    return tool.invoke(args)
 
 
 def test_train_registers_winner_and_activates(tmp_path):
