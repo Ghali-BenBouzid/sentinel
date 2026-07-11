@@ -57,6 +57,7 @@ def test_run_turn_completes_without_interrupt_in_autonomous(tmp_path):
         ticket_dir=str(tmp_path / "tickets"),
         models_dir=str(tmp_path / "models"),
         checkpointer=MemorySaver(),
+        fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
     )
     thread = {"configurable": {"thread_id": "cli1"}}
     output = []

@@ -6,7 +6,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from tests.fakes import FakeChatModel
+from tests.fakes import FakeChatModel, RaisingThenFakeChatModel
+from tests.test_harness import _groq_tool_use_failed
 
 
 def _fake_training_run(tmp_path, rmse=17.1):
@@ -51,6 +52,7 @@ def _build(tmp_path, scripted):
         ticket_dir=str(tmp_path / "tickets"),
         models_dir=str(tmp_path / "models"),
         checkpointer=MemorySaver(),
+        fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
     )
 
 
@@ -186,3 +188,35 @@ def test_model_call_limit_ends_run_instead_of_looping_forever(tmp_path):
     finally:
         del os.environ["SENTINEL_MODEL_CALL_RUN_LIMIT"]
         get_settings.cache_clear()
+
+
+def test_model_call_failure_ends_gracefully_instead_of_crashing(tmp_path):
+    """A provider-rejected malformed tool call produces a graceful message."""
+    from sentinel.agents.agent import build_agent
+
+    failing_model = RaisingThenFakeChatModel(
+        messages=iter([AIMessage("unreachable")]),
+        fail_times=10,
+    )
+    failing_model.exception_factory = lambda: _groq_tool_use_failed(
+        ["framing", "failure_threshold", "reporting_cadence", "success_metric"]
+    )
+    agent = build_agent(
+        chat_model=failing_model,
+        train_fn=lambda cfg: (_ for _ in ()).throw(AssertionError("not reached")),
+        retrain_fn=lambda *a: (_ for _ in ()).throw(AssertionError("not reached")),
+        tools_chat_model=FakeChatModel(messages=iter([AIMessage("unused")])),
+        ticket_dir=str(tmp_path / "tickets"),
+        models_dir=str(tmp_path / "models"),
+        checkpointer=MemorySaver(),
+        fallback_chat_model=failing_model,
+    )
+    final = agent.invoke(
+        {"messages": [HumanMessage("use sensible defaults")], "autonomy": "guarded"},
+        {"configurable": {"thread_id": "incident"}},
+    )
+    last = final["messages"][-1]
+    assert "framing" in last.content
+    assert "failure_threshold" in last.content
+    assert "BadRequestError" not in last.content
+    assert "Traceback" not in last.content

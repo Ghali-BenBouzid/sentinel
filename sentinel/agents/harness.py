@@ -7,13 +7,34 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from .registry import Registry
 
 _MISSING_PROPERTIES = re.compile(r"missing properties:\s*(.+?)\]")
 _QUOTED = re.compile(r"'([^']+)'")
+
+
+class ModelFailureFormatterMiddleware(AgentMiddleware):
+    """Turn exhausted model-call failures into a graceful assistant reply."""
+
+    def __init__(self, corrective_feedback: Callable[[Exception], str]) -> None:
+        super().__init__()
+        self._corrective_feedback = corrective_feedback
+
+    def wrap_model_call(self, request, handler):
+        try:
+            return handler(request)
+        except Exception as error:  # noqa: BLE001
+            return AIMessage(content=self._corrective_feedback(error))
+
+    async def awrap_model_call(self, request, handler):
+        try:
+            return await handler(request)
+        except Exception as error:  # noqa: BLE001
+            return AIMessage(content=self._corrective_feedback(error))
 
 
 def _tier1_template(error: Exception, registry: Registry) -> str | None:

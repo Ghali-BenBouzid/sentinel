@@ -72,6 +72,7 @@ def _app(tmp_path):
             ticket_dir=str(tmp_path / "tickets"),
             models_dir=str(tmp_path / "models"),
             checkpointer=checkpointer,
+            fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
         )
 
     return create_app(

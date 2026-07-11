@@ -8,11 +8,15 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentState,
     ModelCallLimitMiddleware,
+    ModelFallbackMiddleware,
+    ModelRetryMiddleware,
     ToolCallLimitMiddleware,
 )
 
 from ..config import get_settings
+from ..llm.provider import get_chat_model
 from . import domain_context
+from .harness import ModelFailureFormatterMiddleware, make_corrective_feedback
 from .registry import Registry
 from .tools import make_tools
 
@@ -60,6 +64,11 @@ def _default_checkpointer():
     )
 
 
+def _default_fallback_model():
+    """Build the alternate-provider model used after primary retries fail."""
+    return get_chat_model("smart", name="anthropic")
+
+
 def build_agent(
     *,
     chat_model,
@@ -69,6 +78,7 @@ def build_agent(
     ticket_dir,
     models_dir,
     checkpointer=None,
+    fallback_chat_model=None,
 ):
     """Assemble the registry, tools, and create_agent hub."""
     registry = Registry(models_dir)
@@ -81,7 +91,10 @@ def build_agent(
     )
     if checkpointer is None:
         checkpointer = _default_checkpointer()
+    if fallback_chat_model is None:
+        fallback_chat_model = _default_fallback_model()
     settings = get_settings()
+    corrective_feedback = make_corrective_feedback(tools_chat_model, registry)
     middleware = [
         ModelCallLimitMiddleware(
             thread_limit=settings.sentinel_model_call_thread_limit,
@@ -90,6 +103,12 @@ def build_agent(
         ToolCallLimitMiddleware(
             thread_limit=settings.sentinel_tool_call_thread_limit,
             run_limit=settings.sentinel_tool_call_run_limit,
+        ),
+        ModelFailureFormatterMiddleware(corrective_feedback),
+        ModelFallbackMiddleware(fallback_chat_model),
+        ModelRetryMiddleware(
+            max_retries=settings.sentinel_retry_max_attempts,
+            on_failure="error",
         ),
     ]
     return create_agent(

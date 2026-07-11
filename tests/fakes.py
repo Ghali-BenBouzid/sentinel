@@ -9,3 +9,16 @@ class FakeChatModel(GenericFakeChatModel):
 
     def bind_tools(self, *args, **kwargs):
         return self
+
+
+class RaisingThenFakeChatModel(FakeChatModel):
+    """Raise a scripted exception first, then behave normally."""
+
+    fail_times: int = 1
+    exception_factory: object = None
+
+    def _generate(self, *args, **kwargs):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise self.exception_factory()
+        return super()._generate(*args, **kwargs)
