@@ -73,3 +73,13 @@ def test_get_settings_is_cached():
 def test_checkpoint_db_path_has_default():
     get_settings.cache_clear()
     assert get_settings().checkpoint_db_path.endswith(".sqlite")
+
+
+def test_harness_limit_settings_have_sane_defaults():
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.sentinel_model_call_thread_limit == 40
+    assert settings.sentinel_model_call_run_limit == 15
+    assert settings.sentinel_tool_call_thread_limit == 40
+    assert settings.sentinel_tool_call_run_limit == 20
+    assert settings.sentinel_retry_max_attempts == 2

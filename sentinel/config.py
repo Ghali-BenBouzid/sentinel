@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     sentinel_model_smart: str | None = None
     sentinel_model_cheap: str | None = None
 
+    # Harness middleware: runaway-loop / cost insurance.
+    sentinel_model_call_thread_limit: int = 40
+    sentinel_model_call_run_limit: int = 15
+    sentinel_tool_call_thread_limit: int = 40
+    sentinel_tool_call_run_limit: int = 20
+
+    # Harness middleware: retry attempts for a failed model call.
+    sentinel_retry_max_attempts: int = 2
+
 
 @lru_cache
 def get_settings() -> Settings:
