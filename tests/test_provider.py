@@ -20,7 +20,14 @@ def test_get_chat_model_groq_default(monkeypatch):
 
     model = get_chat_model("smart")
     assert isinstance(model, ChatGroq)
-    assert model.model_name == "llama-3.3-70b-versatile"
+    assert model.model_name == "openai/gpt-oss-120b"
+
+
+def test_groq_models_are_not_the_deprecated_ones():
+    from sentinel.llm.provider import _MODELS
+
+    assert _MODELS["groq"]["smart"] == "openai/gpt-oss-120b"
+    assert _MODELS["groq"]["cheap"] == "openai/gpt-oss-20b"
 
 
 def test_get_chat_model_anthropic(monkeypatch):

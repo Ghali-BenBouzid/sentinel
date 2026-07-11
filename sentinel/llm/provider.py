@@ -13,8 +13,8 @@ from ..config import get_settings
 _MODELS = {
     "anthropic": {"smart": "claude-sonnet-5", "cheap": "claude-haiku-4-5"},
     "groq": {
-        "smart": "llama-3.3-70b-versatile",
-        "cheap": "llama-3.1-8b-instant",
+        "smart": "openai/gpt-oss-120b",
+        "cheap": "openai/gpt-oss-20b",
     },
 }
 
