@@ -7,6 +7,7 @@ from pathlib import Path
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentState,
+    HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
     ModelFallbackMiddleware,
     ModelRetryMiddleware,
@@ -19,6 +20,7 @@ from . import domain_context
 from .harness import (
     InvalidToolCallMiddleware,
     ModelFailureFormatterMiddleware,
+    guarded_when,
     make_corrective_feedback,
 )
 from .registry import Registry
@@ -115,6 +117,15 @@ def build_agent(
             on_failure="error",
         ),
         InvalidToolCallMiddleware(corrective_feedback),
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                name: {
+                    "allowed_decisions": ["approve", "reject"],
+                    "when": guarded_when(name),
+                }
+                for name in ("train", "retrain", "promote", "delete", "run_monitor")
+            },
+        ),
     ]
     return create_agent(
         chat_model,

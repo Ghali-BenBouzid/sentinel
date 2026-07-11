@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -55,6 +56,7 @@ class Registry:
         self.root = Path(models_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self.root / "manifest.json"
+        self._lock = threading.RLock()
         if not self._manifest_path.exists():
             self._write_manifest({"active": None, "models": []})
 
@@ -146,19 +148,21 @@ class Registry:
         return self._read_manifest()["active"]
 
     def set_active(self, model_id: str) -> None:
-        self._require(model_id)
-        manifest = self._read_manifest()
-        manifest["active"] = model_id
-        self._write_manifest(manifest)
+        with self._lock:
+            self._require(model_id)
+            manifest = self._read_manifest()
+            manifest["active"] = model_id
+            self._write_manifest(manifest)
 
     def remove(self, model_id: str) -> None:
-        self._require(model_id)
-        if self._read_manifest()["active"] == model_id:
-            raise ValueError(f"{model_id} is the active model; promote another first")
-        shutil.rmtree(self._dir(model_id))
-        manifest = self._read_manifest()
-        manifest["models"].remove(model_id)
-        self._write_manifest(manifest)
+        with self._lock:
+            self._require(model_id)
+            if self._read_manifest()["active"] == model_id:
+                raise ValueError(f"{model_id} is the active model; promote another first")
+            shutil.rmtree(self._dir(model_id))
+            manifest = self._read_manifest()
+            manifest["models"].remove(model_id)
+            self._write_manifest(manifest)
 
     def load_predict(
         self, model_id: str

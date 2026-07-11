@@ -1,20 +1,14 @@
-"""Data-science tools plus the confirmation rail.
+"""Registry-backed data-science tools for the agent harness.
 
-Tools return strings for expected errors and declined confirmations. Runtime
-dependencies are closed over by ``make_tools``; only session autonomy is read
-from checkpointed graph state through ``InjectedState``.
+Tools return strings for expected errors. Runtime dependencies are closed over
+by ``make_tools``; confirmation policy is handled by agent middleware.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
-
 import pandas as pd
 from langchain_core.tools import tool
-from langgraph.config import get_stream_writer
-from langgraph.prebuilt import InjectedState
-from langgraph.types import interrupt
 
 from ..core import automl
 from . import monitor as monitor_mod
@@ -31,25 +25,6 @@ _FAMILY = {
     "random forest regressor": "rf",
     "random forest": "rf",
 }
-
-
-def confirm(action: str, detail: str, autonomy: str) -> str | None:
-    """Return None to proceed, or a denial string. Never raise."""
-    if autonomy == "autonomous":
-        try:
-            get_stream_writer()(
-                {"type": "auto_approved", "tool": action, "detail": detail}
-            )
-        except KeyError:
-            # Direct tool invocation has no LangGraph runtime to stream through.
-            pass
-        return None
-    answer = interrupt({"type": "confirm", "tool": action, "detail": detail})
-    if str(answer).strip().lower() in {"y", "yes"}:
-        return None
-    return (
-        f"Declined: the user did not approve {action} ({detail})."
-    )
 
 
 def _records(frame: pd.DataFrame) -> list[dict]:
@@ -117,19 +92,11 @@ def make_tools(
 
     @tool
     def train(
-        state: Annotated[dict, InjectedState],
         rul_cap: int = 125,
         window: int = 5,
         models: list[str] | None = None,
     ) -> str:
         """Train the model shelf and register its winner."""
-        denial = confirm(
-            "train",
-            f"rul_cap={rul_cap}, window={window}",
-            state["autonomy"],
-        )
-        if denial:
-            return denial
         config = _load_config() or InterviewConfig(
             "RUL",
             30,
@@ -166,18 +133,10 @@ def make_tools(
     def retrain(
         model_id: str,
         hyperparameters: dict,
-        state: Annotated[dict, InjectedState],
         rul_cap: int = 125,
         window: int = 5,
     ) -> str:
         """Retrain one model with explicit hyperparameters."""
-        denial = confirm(
-            "retrain",
-            f"{model_id} {hyperparameters}",
-            state["autonomy"],
-        )
-        if denial:
-            return denial
         run: TrainingRun = retrain_fn(
             model_id, hyperparameters, rul_cap, window
         )
@@ -289,13 +248,8 @@ def make_tools(
             return _unknown(what)
 
     @tool
-    def promote(
-        model_id: str, state: Annotated[dict, InjectedState]
-    ) -> str:
+    def promote(model_id: str) -> str:
         """Set a registered model as active."""
-        denial = confirm("promote", model_id, state["autonomy"])
-        if denial:
-            return denial
         try:
             registry.set_active(model_id)
         except KeyError:
@@ -303,13 +257,8 @@ def make_tools(
         return f"Promoted {model_id}; it is now the active model."
 
     @tool
-    def delete(
-        model_id: str, state: Annotated[dict, InjectedState]
-    ) -> str:
+    def delete(model_id: str) -> str:
         """Remove an inactive registered candidate."""
-        denial = confirm("delete", model_id, state["autonomy"])
-        if denial:
-            return denial
         try:
             registry.remove(model_id)
         except KeyError:
@@ -345,17 +294,8 @@ def make_tools(
     write_report_tool.name = "write_report"
 
     @tool
-    def run_monitor(
-        state: Annotated[dict, InjectedState],
-    ) -> str:
+    def run_monitor() -> str:
         """Monitor active-model readings and file alert tickets."""
-        denial = confirm(
-            "run_monitor",
-            "file maintenance tickets",
-            state["autonomy"],
-        )
-        if denial:
-            return denial
         active = registry.active()
         if active is None:
             return "No active model to monitor; train one first."

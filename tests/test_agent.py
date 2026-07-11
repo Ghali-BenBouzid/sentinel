@@ -157,10 +157,63 @@ def test_guarded_confirmation_interrupt_and_mapped_resume(tmp_path):
     )
     state = agent.get_state(thread)
     assert state.interrupts
-    assert state.interrupts[0].value["tool"] == "train"
-    final = agent.invoke(
-        Command(resume={state.interrupts[0].id: "yes"}), thread
-    )
+    request = state.interrupts[0].value
+    assert request["action_requests"][0]["name"] == "train"
+    final = agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), thread)
+    assert "Trained" in final["messages"][-1].content
+
+
+def test_batched_confirmation_two_guarded_calls_in_one_message(tmp_path):
+    from sentinel.agents.registry import Registry
+
+    models_dir = tmp_path / "models"
+    registry = Registry(models_dir)
+    manifest = registry._read_manifest()
+    manifest["models"] = ["et-v1", "et-v2"]
+    manifest["active"] = "et-v1"
+    registry._write_manifest(manifest)
+    for model_id in ("et-v1", "et-v2"):
+        (registry.root / model_id).mkdir()
+        (registry.root / model_id / "metrics.json").write_text(
+            '{"rmse": 17.1, "mae": 12.0, "r2": 0.83}'
+        )
+        (registry.root / model_id / "provenance.json").write_text("{}")
+    scripted = [
+        AIMessage(content="", tool_calls=[
+            _tc("promote", {"model_id": "et-v1"}, "c1"),
+            _tc("delete", {"model_id": "et-v2"}, "c2"),
+        ]),
+        AIMessage(content="Confirmed both actions."),
+    ]
+    agent = _build(tmp_path, scripted)
+    thread = {"configurable": {"thread_id": "batched"}}
+    agent.invoke({
+        "messages": [HumanMessage("promote et-v1 and delete et-v2")],
+        "autonomy": "guarded",
+    }, thread)
+    state = agent.get_state(thread)
+    assert len(state.interrupts) == 1
+    assert {a["name"] for a in state.interrupts[0].value["action_requests"]} == {
+        "promote", "delete"
+    }
+    final = agent.invoke(Command(resume={"decisions": [
+        {"type": "approve"}, {"type": "approve"}
+    ]}), thread)
+    assert "Confirmed both actions" in final["messages"][-1].content
+    assert registry.active() == "et-v1"
+    assert registry.list() == ["et-v1"]
+
+
+def test_autonomous_mode_still_skips_confirmation(tmp_path):
+    agent = _build(tmp_path, [
+        AIMessage(content="", tool_calls=[_tc("train", {}, "c1")]),
+        AIMessage(content="Trained."),
+    ])
+    thread = {"configurable": {"thread_id": "auto"}}
+    final = agent.invoke({
+        "messages": [HumanMessage("train")], "autonomy": "autonomous"
+    }, thread)
+    assert not agent.get_state(thread).interrupts
     assert "Trained" in final["messages"][-1].content
 
 

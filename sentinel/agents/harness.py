@@ -17,6 +17,22 @@ _MISSING_PROPERTIES = re.compile(r"missing properties:\s*(.+?)\]")
 _QUOTED = re.compile(r"'([^']+)'")
 
 
+def guarded_when(tool_name: str):
+    """Interrupt guarded sessions and audit auto-approved autonomous calls."""
+
+    def when(request) -> bool:
+        if request.state.get("autonomy") == "autonomous":
+            request.runtime.stream_writer({
+                "type": "auto_approved",
+                "tool": tool_name,
+                "detail": str(request.tool_call["args"]),
+            })
+            return False
+        return True
+
+    return when
+
+
 class ModelFailureFormatterMiddleware(AgentMiddleware):
     """Turn exhausted model-call failures into a graceful assistant reply."""
 
