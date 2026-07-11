@@ -16,7 +16,11 @@ from langchain.agents.middleware import (
 from ..config import get_settings
 from ..llm.provider import get_chat_model
 from . import domain_context
-from .harness import ModelFailureFormatterMiddleware, make_corrective_feedback
+from .harness import (
+    InvalidToolCallMiddleware,
+    ModelFailureFormatterMiddleware,
+    make_corrective_feedback,
+)
 from .registry import Registry
 from .tools import make_tools
 
@@ -110,6 +114,7 @@ def build_agent(
             max_retries=settings.sentinel_retry_max_attempts,
             on_failure="error",
         ),
+        InvalidToolCallMiddleware(corrective_feedback),
     ]
     return create_agent(
         chat_model,

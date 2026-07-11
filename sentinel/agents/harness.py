@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from .registry import Registry
 
@@ -36,6 +36,33 @@ class ModelFailureFormatterMiddleware(AgentMiddleware):
         except Exception as error:  # noqa: BLE001
             return AIMessage(content=self._corrective_feedback(error))
 
+
+class InvalidToolCallMiddleware(AgentMiddleware):
+    """Return malformed parsed tool calls to the model with corrective feedback."""
+
+    def __init__(self, corrective_feedback: Callable[[Exception], str]) -> None:
+        super().__init__()
+        self._corrective_feedback = corrective_feedback
+
+    def after_model(self, state, runtime):
+        messages = state["messages"]
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage) or not last.invalid_tool_calls:
+            return None
+
+        tool_messages = []
+        for invalid in last.invalid_tool_calls:
+            tool_messages.append(ToolMessage(
+                content=self._corrective_feedback(
+                    ValueError(invalid.get("error") or "the tool call could not be parsed")
+                ),
+                tool_call_id=invalid.get("id") or "unknown",
+                name=invalid.get("name") or "unknown_tool",
+                status="error",
+            ))
+        return {"messages": tool_messages, "jump_to": "model"}
 
 def _tier1_template(error: Exception, registry: Registry) -> str | None:
     """Return deterministic feedback for a recognized error shape."""
