@@ -1,0 +1,768 @@
+<title>Harness Engineering Field Notes — Sentinel</title>
+<style>
+  :root {
+    --ink: #12161c;
+    --paper: #eef1f0;
+    --panel: #ffffff;
+    --panel-2: #e4e8e5;
+    --line: #d2d8d3;
+    --muted: #52585b;
+    --accent: #2c6e8f;
+    --accent-ink: #ffffff;
+    --ok: #3f7f52;
+    --warn: #a9701f;
+    --critical: #a83f34;
+    --code-bg: #12161c;
+    --code-ink: #e7ece9;
+    --code-accent: #7fc4b8;
+    --font-display: "Helvetica Neue", "Arial Narrow", "Segoe UI Semibold", -apple-system, sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e9ecea;
+      --paper: #12161c;
+      --panel: #1a2129;
+      --panel-2: #212a33;
+      --line: #2c3540;
+      --muted: #a3aeb2;
+      --accent: #6fb3d6;
+      --accent-ink: #0d1013;
+      --ok: #6dbf85;
+      --warn: #e3ab5c;
+      --critical: #e0776a;
+      --code-bg: #0c1014;
+      --code-ink: #dfe6e2;
+      --code-accent: #7fc4b8;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e9ecea;
+    --paper: #12161c;
+    --panel: #1a2129;
+    --panel-2: #212a33;
+    --line: #2c3540;
+    --muted: #a3aeb2;
+    --accent: #6fb3d6;
+    --accent-ink: #0d1013;
+    --ok: #6dbf85;
+    --warn: #e3ab5c;
+    --critical: #e0776a;
+    --code-bg: #0c1014;
+    --code-ink: #dfe6e2;
+    --code-accent: #7fc4b8;
+  }
+  :root[data-theme="light"] {
+    --ink: #12161c;
+    --paper: #eef1f0;
+    --panel: #ffffff;
+    --panel-2: #e4e8e5;
+    --line: #d2d8d3;
+    --muted: #52585b;
+    --accent: #2c6e8f;
+    --accent-ink: #ffffff;
+    --ok: #3f7f52;
+    --warn: #a9701f;
+    --critical: #a83f34;
+    --code-bg: #12161c;
+    --code-ink: #e7ece9;
+    --code-accent: #7fc4b8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .masthead {
+    border-bottom: 1px solid var(--line);
+    padding: 2.4rem 1.5rem 1.8rem;
+  }
+  .masthead-inner { max-width: 78rem; margin: 0 auto; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.6rem;
+  }
+  h1.title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-stretch: condensed;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    font-size: clamp(1.9rem, 4vw, 2.9rem);
+    margin: 0 0 0.5rem;
+  }
+  .dek {
+    max-width: 52rem;
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin: 0;
+  }
+  .meta-row {
+    display: flex;
+    gap: 1.4rem;
+    flex-wrap: wrap;
+    margin-top: 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .meta-row b { color: var(--ink); }
+
+  .layout {
+    max-width: 78rem;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+    gap: 2.5rem;
+    padding: 2rem 1.5rem 5rem;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    nav.toc { position: static; order: 2; }
+  }
+
+  nav.toc {
+    position: sticky;
+    top: 1.5rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    padding: 1rem 1.1rem;
+    min-width: 0;
+  }
+  nav.toc .toc-label {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.7rem;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  nav.toc a {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.88rem;
+    display: block;
+    border-left: 2px solid transparent;
+    padding-left: 0.6rem;
+  }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+
+  main { min-width: 0; }
+
+  section { margin-bottom: 3.2rem; scroll-margin-top: 1.5rem; }
+  section > .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 0.6rem;
+  }
+  .section-tag {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  h2 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-stretch: condensed;
+    font-size: 1.5rem;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.12rem;
+    margin: 1.6rem 0 0.6rem;
+  }
+  p { max-width: 68ch; margin: 0 0 1rem; }
+  section > p, section > .prose > p { max-width: 68ch; }
+  ul, ol.plain { max-width: 68ch; padding-left: 1.3rem; margin: 0 0 1rem; }
+  li { margin-bottom: 0.4rem; }
+  .prose strong { color: var(--ink); }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.87em;
+    background: var(--panel-2);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    max-width: 100%;
+    margin: 0.9rem 0 1.2rem;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  pre .c { color: var(--code-accent); }
+
+  .callout {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    max-width: 68ch;
+    margin: 1rem 0 1.3rem;
+  }
+  .callout .callout-label {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.4rem;
+  }
+  .callout.finding .callout-label { color: var(--warn); }
+  .callout p:last-child { margin-bottom: 0; }
+
+  .table-wrap { overflow-x: auto; margin: 1rem 0 1.6rem; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; min-width: 46rem; font-size: 0.88rem; }
+  thead th {
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--panel-2);
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { font-weight: 600; white-space: nowrap; }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 100px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .chip.likely { color: var(--critical); }
+  .chip.possible { color: var(--warn); }
+  .chip.rare { color: var(--ok); }
+  .chip.none { color: var(--muted); }
+  .chip.partial { color: var(--warn); }
+  .chip.full { color: var(--ok); }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 1.6rem;
+  }
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    padding: 1rem 1.1rem;
+  }
+  .card h4 {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    margin: 0 0 0.3rem;
+    color: var(--accent);
+  }
+  .card p { font-size: 0.86rem; color: var(--muted); margin: 0 0 0.5rem; max-width: none; }
+  .card .imp {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--ink);
+    background: var(--panel-2);
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+
+  .refs { max-width: 68ch; font-size: 0.86rem; }
+  .refs li { color: var(--muted); }
+  .refs a { word-break: break-word; }
+
+  footer.page-foot {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: 0 1.5rem 3rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a, .chip { transition: color 120ms ease, border-color 120ms ease; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Learning note 05 — agent reliability</p>
+    <h1 class="title">Harness Engineering Field Notes</h1>
+    <p class="dek">
+      What broke Sentinel on a free Groq model, why, and the discipline —
+      LangChain-native and general — for making a reasoning agent trustworthy
+      on top of an unreliable one.
+    </p>
+    <div class="meta-row">
+      <span><b>Anchor incident:</b> <code>save_config</code> rejected by Groq, 400 tool_use_failed</span>
+      <span><b>Model in use:</b> <code>llama-3.3-70b-versatile</code> via Groq free tier</span>
+      <span><b>Written:</b> 2026-07-11</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="Table of contents">
+    <p class="toc-label">On this page</p>
+    <ol>
+      <li><a href="#incident">1. The incident, decoded</a></li>
+      <li><a href="#map">2. The failure map</a></li>
+      <li><a href="#toolkit">3. LangChain's native toolkit</a></li>
+      <li><a href="#feedback">4. The corrective-feedback pattern</a></li>
+      <li><a href="#observability">5. Observability &amp; evals</a></li>
+      <li><a href="#next">6. What this means for Sentinel</a></li>
+      <li><a href="#sources">Sources</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section id="incident">
+      <div class="section-head">
+        <span class="section-tag">01 / incident</span>
+        <h2>The incident, decoded</h2>
+      </div>
+      <div class="prose">
+        <p>
+          Mid-conversation, the agent answered a user's question in prose
+          <em>and</em> tried to call <code>save_config()</code> in the same
+          turn &mdash; with no arguments. <code>save_config</code> requires four
+          fields (<code>framing</code>, <code>failure_threshold</code>,
+          <code>reporting_cadence</code>, <code>success_metric</code>) that the
+          conversation hadn't gathered yet. Groq's API validates tool-call
+          arguments against the tool's JSON schema <strong>on the server</strong>,
+          before returning anything &mdash; so instead of a normal completion, it
+          returned an HTTP 400 <code>tool_use_failed</code>. That exception
+          propagated straight out of the model call, through
+          <code>create_agent</code>'s ReAct loop, and out the SSE endpoint as a
+          raw exception dump.
+        </p>
+        <p>
+          Two things make this specific, not generic "LLMs sometimes mess up":
+        </p>
+        <ul>
+          <li>
+            It is a <strong>provider-side rejection</strong>, not a LangChain
+            parsing failure. A related but distinct LangChain gap exists too
+            (<a href="https://github.com/langchain-ai/langchain/issues/33504">GH&nbsp;#33504</a>):
+            when the model's JSON is malformed enough that LangChain's own
+            parser can't build a <code>tool_calls</code> entry at all, it lands
+            in <code>invalid_tool_calls</code> instead &mdash; and
+            <code>create_agent</code>'s routing only checks whether
+            <code>tool_calls</code> is empty, so the turn silently ends without
+            ever telling the model what went wrong. Different failure, same
+            symptom: the model never sees its own mistake.
+          </li>
+          <li>
+            It is more likely on Groq specifically because of <strong>decoding
+            mode</strong>. Groq's structured-output docs describe two modes:
+            <code>strict: true</code> uses constrained decoding and
+            <em>guarantees</em> schema-valid output; without it, the model
+            free-generates JSON that is only validated after the fact, so
+            malformed or incomplete tool calls slip through generation and get
+            rejected at the gate. LangChain's default <code>bind_tools()</code>
+            on <code>ChatGroq</code> does not turn strict mode on.
+          </li>
+        </ul>
+        <div class="callout">
+          <p class="callout-label">Why this matters more here than on a paid frontier model</p>
+          <p>
+            Nothing in the current stack catches a model-call exception and
+            turns it into something the model (or the user) can recover from.
+            The confirmation rail (<code>confirm()</code> in
+            <code>tools.py</code>) only guards <em>successful</em> tool calls
+            from running without consent &mdash; it has nothing to say about a
+            call that never reaches a tool at all.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="map">
+      <div class="section-head">
+        <span class="section-tag">02 / taxonomy</span>
+        <h2>The failure map</h2>
+      </div>
+      <p class="prose">
+        Harness engineering research frames 2026 as the year this became its
+        own discipline: designing the constraints, feedback loops, and
+        verification around an agent so its mistakes get caught and corrected
+        rather than reaching the user raw. Below is where Sentinel actually
+        stands against each category &mdash; not a generic checklist.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>What breaks</th>
+              <th>Likelihood on free Groq</th>
+              <th>Sentinel today</th>
+              <th>Native fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Model call failure</td>
+              <td>Malformed/incomplete tool-call args rejected server-side; rate limits; timeouts</td>
+              <td><span class="chip likely">likely</span></td>
+              <td><span class="chip full">shipped</span> &mdash; <code>ModelRetryMiddleware</code> + <code>ModelFallbackMiddleware</code> + <code>ModelFailureFormatterMiddleware</code></td>
+              <td><code>ModelRetryMiddleware</code>, <code>ModelFallbackMiddleware</code></td>
+            </tr>
+            <tr>
+              <td>Invalid tool-call parsing</td>
+              <td>JSON malformed enough that LangChain can't build <code>tool_calls</code> at all &mdash; lands in <code>invalid_tool_calls</code>, ignored by routing</td>
+              <td><span class="chip possible">possible</span></td>
+              <td><span class="chip full">shipped</span> &mdash; custom <code>InvalidToolCallMiddleware</code></td>
+              <td>custom middleware (no built-in fix yet)</td>
+            </tr>
+            <tr>
+              <td>Tool execution failure</td>
+              <td>A tool raises, or receives schema-valid but semantically wrong arguments (bad model id, etc.)</td>
+              <td><span class="chip possible">possible</span></td>
+              <td><span class="chip full">handled</span> &mdash; tools return strings, never raise; <code>ToolNode</code>'s own default catches anything that still escapes</td>
+              <td><em>dropped</em> &mdash; <code>ToolRetryMiddleware</code> can't see tool exceptions under <code>create_agent</code>'s default <code>ToolNode</code> wiring, verified against installed source</td>
+            </tr>
+            <tr>
+              <td>Runaway loops / cost</td>
+              <td>Agent keeps calling tools or re-prompting without converging</td>
+              <td><span class="chip rare">rare</span></td>
+              <td><span class="chip full">shipped</span> &mdash; <code>ModelCallLimitMiddleware</code> + <code>ToolCallLimitMiddleware</code></td>
+              <td><code>ModelCallLimitMiddleware</code>, <code>ToolCallLimitMiddleware</code></td>
+            </tr>
+            <tr>
+              <td>Context overflow</td>
+              <td>Long conversations or big tool outputs exceed the context window</td>
+              <td><span class="chip rare">rare</span> today, grows with usage</td>
+              <td><span class="chip none">unbounded</span></td>
+              <td><code>SummarizationMiddleware</code>, <code>ContextEditingMiddleware</code></td>
+            </tr>
+            <tr>
+              <td>Safety / consent</td>
+              <td>Destructive or costly actions run without a human saying yes</td>
+              <td>&mdash;</td>
+              <td><span class="chip full">shipped</span> &mdash; <code>HumanInTheLoopMiddleware</code>, replacing the hand-rolled <code>confirm()</code> + <code>interrupt()</code> rail</td>
+              <td><code>HumanInTheLoopMiddleware</code> does the same thing built-in</td>
+            </tr>
+            <tr>
+              <td>Observability</td>
+              <td>No way to see why the agent chose a tool call after the fact, or measure regressions</td>
+              <td>&mdash;</td>
+              <td><span class="chip none">none</span> &mdash; SSE events only, nothing persisted</td>
+              <td>LangSmith tracing; DeepEval/Promptfoo for evals</td>
+            </tr>
+            <tr>
+              <td>Model staleness</td>
+              <td>The pinned model gets deprecated or shut down upstream</td>
+              <td>&mdash;</td>
+              <td><span class="chip full">shipped</span> &mdash; swapped to <code>openai/gpt-oss-120b</code> / <code>openai/gpt-oss-20b</code></td>
+              <td>config-level model override (already exists), needs a swap</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout finding">
+        <p class="callout-label">Concrete finding, not general advice</p>
+        <p>
+          Groq's own deprecation page lists <code>llama-3.3-70b-versatile</code>
+          &mdash; the model <code>sentinel/llm/provider.py</code> hardcodes as
+          the <code>"smart"</code> tier for the <code>groq</code> provider
+          &mdash; with a scheduled shutdown around <b>2026-08-16</b> on
+          free/developer tiers, recommending <code>openai/gpt-oss-120b</code>
+          or <code>qwen/qwen3.6-27b</code> as replacements. Worth confirming
+          directly at <code>console.groq.com/docs/deprecations</code> before
+          acting &mdash; but if accurate, that's about five weeks out from
+          today. This is independent of the harness work below: it's a config
+          change, not a reliability pattern.
+        </p>
+        <p>
+          <strong>Shipped.</strong> <code>_MODELS["groq"]</code> now points at
+          <code>openai/gpt-oss-120b</code> / <code>openai/gpt-oss-20b</code>,
+          confirmed with a live tool-call smoke test before anything else in
+          the harness stack was built on top of it.
+        </p>
+      </div>
+    </section>
+
+    <section id="toolkit">
+      <div class="section-head">
+        <span class="section-tag">03 / langchain</span>
+        <h2>LangChain's native toolkit</h2>
+      </div>
+      <p class="prose">
+        This is the direct payoff of having built on <code>create_agent</code>
+        rather than a hand-rolled loop: every category above except "invalid
+        tool-call parsing" already has a maintained, tested middleware class.
+        <code>middleware=[...]</code> composes on <code>create_agent</code>
+        exactly the way it composes today for the confirmation rail &mdash; these
+        are additions, not a rewrite.
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <h4>ModelRetryMiddleware</h4>
+          <p>Retries a failed model call with exponential backoff. This is the direct fix for the <code>save_config</code> incident's failure mode &mdash; a transient rejection, not a broken tool.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>ModelFallbackMiddleware</h4>
+          <p>Falls back to a different model (or provider) after repeated failures. Chains cleanly with a Groq&rarr;Anthropic fallback since both are already wired in <code>provider.py</code>.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>ToolRetryMiddleware</h4>
+          <p>Retries a failing tool call with backoff, scoped to specific tools if needed. Sentinel's tools already return strings instead of raising, so this is a second line of defense, not the primary fix.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>ModelCallLimitMiddleware</h4>
+          <p>Caps model calls per run and per thread, ending cleanly instead of looping forever. Cheap insurance against a confused agent burning the free-tier daily quota.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>SummarizationMiddleware</h4>
+          <p>Compresses older messages once the conversation crosses a token threshold, so long sessions don't blow the context window.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>ContextEditingMiddleware</h4>
+          <p>Clears old tool-call outputs (e.g. long leaderboards) once total tokens cross a trigger, keeping only the most recent N results.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>HumanInTheLoopMiddleware</h4>
+          <p>The built-in version of what <code>confirm()</code>/<code>interrupt()</code> already hand-rolls per guarded tool. Not a priority to swap &mdash; the existing rail is tested and matches the id-addressed multi-confirmation contract already in the API.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+        <div class="card">
+          <h4>PIIMiddleware</h4>
+          <p>Redacts emails, card numbers, IPs in input/output. Low priority for a single-user learning backend, but the right answer if this ever takes real user data.</p>
+          <span class="imp">langchain.agents.middleware</span>
+        </div>
+      </div>
+      <p class="prose" style="color: var(--muted); font-size: 0.86rem;">
+        Full catalog is larger &mdash; <code>ToolCallLimitMiddleware</code>,
+        <code>LLMToolSelectorMiddleware</code>, <code>TodoListMiddleware</code> and
+        others exist too. These eight are the ones that map to a category
+        Sentinel actually has exposure to.
+      </p>
+      <h3>Multiple middleware, one call each</h3>
+      <p>
+        Wrap-style hooks (<code>wrap_model_call</code>, <code>wrap_tool_call</code>)
+        nest: the first middleware in the list is outermost. Before/after hooks
+        run in registration order going in, reverse order coming out. Order
+        matters when stacking retry + fallback + limits &mdash; retries should sit
+        inside the call-limit counter, not outside it, or a retried call won't
+        count against the budget meant to stop it.
+      </p>
+      <pre><span class="c"># conceptual order for Sentinel's model-call stack</span>
+middleware=[
+    ModelCallLimitMiddleware(thread_limit=40, run_limit=15),  <span class="c"># outermost: hard stop</span>
+    ModelFallbackMiddleware("claude-haiku-4-5"),                <span class="c"># escalate provider</span>
+    ModelRetryMiddleware(max_retries=2, initial_delay=1.0),    <span class="c"># innermost: retry same model first</span>
+]</pre>
+    </section>
+
+    <section id="feedback">
+      <div class="section-head">
+        <span class="section-tag">04 / pattern</span>
+        <h2>The corrective-feedback pattern</h2>
+      </div>
+      <div class="prose">
+        <p>
+          Middleware handles the mechanics of retrying; it doesn't by itself
+          make a retry <em>useful</em>. A weak model retrying the identical
+          malformed call just fails the identical way. The pattern that
+          actually helps, converging on the same shape across every tool-use
+          reliability study found:
+        </p>
+        <ul>
+          <li>
+            <strong>Catch, don't crash.</strong> The failure becomes a message
+            back into the conversation &mdash; not a raised exception the graph
+            has no path around.
+          </li>
+          <li>
+            <strong>Name the fix, not just the failure.</strong> "Your
+            <code>save_config</code> call is missing <code>framing</code>,
+            <code>failure_threshold</code>, <code>reporting_cadence</code>,
+            <code>success_metric</code> &mdash; ask the user for these before
+            calling it again" recovers a turn. "Error: tool_use_failed"
+            doesn't &mdash; the model reads "retry" as "call the exact same
+            thing again" unless told otherwise.
+          </li>
+          <li>
+            <strong>Cap it.</strong> Every retry adds the previous failed
+            attempt to context. A model that fails three times in a row is now
+            reasoning with three failures polluting its own history &mdash; cap
+            attempts low (2&ndash;3) and fall back to a plain apologetic message
+            past the cap, not an infinite loop.
+          </li>
+        </ul>
+        <p>
+          Applied to the incident: a <code>wrap_model_call</code> middleware
+          that catches the provider's <code>BadRequestError</code>, and
+          instead of retrying the identical request, injects a
+          <code>ToolMessage</code>-shaped correction naming the missing fields
+          before letting the model try again. This is the shape of the
+          eventual Phase-1 fix &mdash; not designed yet, just scoped here.
+        </p>
+      </div>
+    </section>
+
+    <section id="observability">
+      <div class="section-head">
+        <span class="section-tag">05 / measurement</span>
+        <h2>Observability &amp; evals</h2>
+      </div>
+      <div class="prose">
+        <p>
+          Right now the only record of what the agent did is whatever scrolled
+          past in the SSE stream. Three practices, roughly in the order teams
+          actually adopt them:
+        </p>
+        <ul>
+          <li>
+            <strong>Trace first.</strong> LangSmith (or any OpenTelemetry-based
+            tracer) attaches to <code>create_agent</code> with no architecture
+            change &mdash; every model call, tool call, and intermediate step
+            becomes inspectable after the fact, instead of inferred from logs.
+            This alone would have made the incident's root cause visible in
+            one click instead of a debugging session.
+          </li>
+          <li>
+            <strong>Then eval.</strong> Code-based checks (did <code>compare</code>
+            actually re-evaluate on a common <code>rul_cap</code>? did the
+            registry end with the right model active?) catch objective
+            regressions cheaply. LLM-as-judge checks (did the agent's prose
+            explanation actually make sense to a non-expert?) catch quality
+            drift that no assertion can. DeepEval is pytest-native &mdash; these
+            could sit next to the existing offline agent tests rather than a
+            separate harness.
+          </li>
+          <li>
+            <strong>Close the loop.</strong> The highest-leverage version of
+            this: every production failure (like the incident that started
+            this note) becomes a fixture in the eval suite, so a regression
+            can't silently reappear.
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="next">
+      <div class="section-head">
+        <span class="section-tag">06 / scoping</span>
+        <h2>What this means for Sentinel</h2>
+      </div>
+      <div class="prose">
+        <p>
+          Per the phased approach: model-call reliability is the natural
+          Phase&nbsp;1, since it's the category with a live incident, the
+          highest likelihood on the current model, and a direct LangChain-native
+          fix. Rough shape, to be turned into an actual spec next:
+        </p>
+        <ul>
+          <li><code>ModelRetryMiddleware</code> + a corrective-feedback <code>wrap_model_call</code> for the provider-rejection class of failure.</li>
+          <li>A look at whether <code>ChatGroq</code> exposes a strict/constrained-decoding flag through <code>bind_tools</code>, to prevent the malformed call at the source rather than only recovering from it.</li>
+          <li><code>ModelCallLimitMiddleware</code> as cheap insurance, low effort to add alongside Phase 1.</li>
+          <li>Everything else in the map &mdash; context management, observability, evals, PII &mdash; deferred to its own later spec, not because it doesn't matter, but because none of it has an incident behind it yet.</li>
+        </ul>
+        <p style="color: var(--muted); font-size: 0.86rem;">
+          Also worth a standalone decision, separate from harness work: the
+          <code>llama-3.3-70b-versatile</code> deprecation clock above.
+        </p>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="section-head">
+        <span class="section-tag">/ sources</span>
+        <h2>Sources</h2>
+      </div>
+      <ul class="refs">
+        <li><a href="https://reference.langchain.com/python/langchain/agents/middleware/types/AgentMiddleware/wrap_tool_call">wrap_tool_call — LangChain Reference</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/langchain/middleware/custom">Custom middleware — Docs by LangChain</a></li>
+        <li><a href="https://docs.langchain.com/oss/python/langchain/middleware/built-in">Prebuilt middleware — Docs by LangChain</a></li>
+        <li><a href="https://reference.langchain.com/python/langchain/agents/middleware/tool_retry/ToolRetryMiddleware">ToolRetryMiddleware — LangChain Reference</a></li>
+        <li><a href="https://github.com/langchain-ai/langchain/issues/33504">create_agent does not handle invalid_tool_calls from JSON parsing errors — GitHub Issue #33504</a></li>
+        <li><a href="https://www.langchain.com/blog/how-middleware-lets-you-customize-your-agent-harness">How Middleware Lets You Customize Your Agent Harness — LangChain blog</a></li>
+        <li><a href="https://blog.n8n.io/llm-tool-calling-error-handling/">LLM Tool Calling Error Handling: Retries and Fallbacks — n8n</a></li>
+        <li><a href="https://altersquare.io/tool-calling-reliability-agent-frameworks-measurements-architecture/">Tool-Calling Reliability for Agent Frameworks</a></li>
+        <li><a href="https://arxiv.org/pdf/2605.08563">Why Retrying Fails: Context Contamination in LLM Agent Pipelines</a></li>
+        <li><a href="https://www.faros.ai/blog/harness-engineering">Harness Engineering: Making AI Coding Agents Work in 2026 — Faros AI</a></li>
+        <li><a href="https://github.com/ai-boost/awesome-harness-engineering">awesome-harness-engineering — GitHub</a></li>
+        <li><a href="https://machinelearningplus.com/gen-ai/langgraph-error-handling-retries-fallback-strategies/">LangGraph Error Handling: Retries &amp; Fallback Strategies</a></li>
+        <li><a href="https://console.groq.com/docs/structured-outputs">Structured Outputs — GroqDocs</a></li>
+        <li><a href="https://console.groq.com/docs/deprecations">Model Deprecation — GroqDocs</a></li>
+        <li><a href="https://www.langchain.com/resources/agent-observability">AI Agent Observability: Tracing, Testing, and Improving Agents — LangChain</a></li>
+        <li><a href="https://deepeval.com/guides/guides-llm-as-a-judge">LLM-as-a-Judge in 2026 — DeepEval</a></li>
+        <li><a href="https://technspire.com/en/blog/agent-evaluation-2026-deepeval-promptfoo-langsmith">Agent Evaluation in 2026: DeepEval, Promptfoo, LangSmith</a></li>
+        <li><a href="https://brandonlincolnhendricks.com/research/circuit-breaker-patterns-ai-agent-reliability">Circuit Breaker Patterns for AI Agent Reliability</a></li>
+        <li><a href="https://agenta.ai/blog/top-6-techniques-to-manage-context-length-in-llms">Top techniques to Manage Context Lengths in LLMs</a></li>
+      </ul>
+    </section>
+
+  </main>
+</div>
+
+<footer class="page-foot">
+  Scratch research note for Sentinel's agent-layer harness work. Not a spec —
+  see <code>docs/superpowers/specs/</code> once Phase 1 is designed.
+</footer>
