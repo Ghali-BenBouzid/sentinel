@@ -72,3 +72,33 @@ def test_run_turn_completes_without_interrupt_in_autonomous(tmp_path):
     )
     assert pending is False
     assert any("Trained et-v1" in str(line) for line in output)
+
+
+def test_run_turn_reports_pending_on_guarded_confirmation(tmp_path):
+    from sentinel.agents.__main__ import run_turn
+    from sentinel.agents.agent import build_agent
+
+    agent = build_agent(
+        chat_model=FakeChatModel(messages=iter([
+            AIMessage(content="", tool_calls=[{"name": "train", "args": {}, "id": "c1"}]),
+            AIMessage(content="Trained et-v1."),
+        ])),
+        train_fn=lambda cfg: _fake_run(tmp_path),
+        retrain_fn=lambda *args: _fake_run(tmp_path),
+        tools_chat_model=FakeChatModel(messages=iter([AIMessage("report")])),
+        ticket_dir=str(tmp_path / "tickets"),
+        models_dir=str(tmp_path / "models"),
+        checkpointer=MemorySaver(),
+        fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
+    )
+    thread = {"configurable": {"thread_id": "cli-guarded"}}
+    output = []
+    pending = run_turn(
+        agent,
+        thread,
+        {"messages": [HumanMessage("train")], "autonomy": "guarded"},
+        output.append,
+    )
+    assert pending is True
+    state = agent.get_state(thread)
+    assert state.interrupts[0].value["action_requests"][0]["name"] == "train"

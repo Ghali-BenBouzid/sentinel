@@ -77,18 +77,20 @@ def main() -> None:
         pending = run_turn(agent, thread, graph_input)
         while pending:
             state = agent.get_state(thread)
-            answers = {}
-            for item in state.interrupts:
-                value = item.value
+            request = state.interrupts[0].value
+            decisions = []
+            for action in request["action_requests"]:
                 answer = input(
-                    f"Confirm {value.get('tool')} "
-                    f"({value.get('detail')})? [y/N] "
+                    f"Confirm {action['name']} ({action['args']})? [y/N] "
                 )
-                answers[item.id] = answer
+                if answer.strip().lower() in {"y", "yes"}:
+                    decisions.append({"type": "approve"})
+                else:
+                    decisions.append({"type": "reject"})
             pending = run_turn(
                 agent,
                 thread,
-                Command(resume=answers),
+                Command(resume={"decisions": decisions}),
             )
 
 
