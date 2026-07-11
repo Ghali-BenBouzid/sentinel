@@ -63,6 +63,21 @@ def _transcript(messages) -> list[dict]:
     return out
 
 
+def _pending_cards(state) -> list[dict]:
+    if not state.interrupts:
+        return []
+    request = state.interrupts[0].value
+    interrupt_id = state.interrupts[0].id
+    return [
+        {
+            "interrupt": f"{interrupt_id}:{index}",
+            "tool": action["name"],
+            "detail": json.dumps(action["args"]),
+        }
+        for index, action in enumerate(request["action_requests"])
+    ]
+
+
 def create_app(
     agent_factory=None, checkpointer=None, models_dir="artifacts/models"
 ) -> FastAPI:
@@ -139,11 +154,8 @@ def create_app(
             return
         state = agent.get_state(thread)
         if state.interrupts:
-            for item in state.interrupts:
-                yield _sse(
-                    "confirm",
-                    {**item.value, "interrupt": item.id},
-                )
+            for card in _pending_cards(state):
+                yield _sse("confirm", card)
         else:
             yield _sse("done", {})
 
@@ -210,22 +222,38 @@ def create_app(
     async def resume(thread_id: str, body: dict):
         thread = _thread(thread_id)
         _require(thread)
+        state = agent.get_state(thread)
+        if not state.interrupts:
+            raise HTTPException(status_code=400, detail="no confirmation is pending")
+        request = state.interrupts[0].value
+        interrupt_id = state.interrupts[0].id
+        expected = len(request["action_requests"])
         answers = body.get("answers")
         if answers is None:
-            state = agent.get_state(thread)
-            if len(state.interrupts) != 1:
+            if expected != 1:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        "multiple confirmations pending; "
-                        "use 'answers' map"
-                    ),
+                    detail="multiple confirmations pending; use 'answers' map",
                 )
-            answers = {
-                state.interrupts[0].id: body.get("answer", "")
-            }
+            answers = {f"{interrupt_id}:0": body.get("answer", "")}
+        by_index: dict[int, str] = {}
+        for composite_id, answer in answers.items():
+            base, _, index = composite_id.rpartition(":")
+            if base != interrupt_id or not index.isdigit():
+                raise HTTPException(status_code=400, detail=f"unknown confirmation id {composite_id!r}")
+            by_index[int(index)] = answer
+        if sorted(by_index) != list(range(expected)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"expected answers for all {expected} pending confirmation(s), got {sorted(by_index)}",
+            )
+        decisions = [
+            {"type": "approve"} if by_index[i].strip().lower() in {"y", "yes"}
+            else {"type": "reject"}
+            for i in range(expected)
+        ]
         return StreamingResponse(
-            _stream(Command(resume=answers), thread),
+            _stream(Command(resume={"decisions": decisions}), thread),
             media_type="text/event-stream",
             headers={"x-thread-id": thread_id},
         )
@@ -251,10 +279,7 @@ def create_app(
         messages = state.values.get("messages", [])
         return {
             "autonomy": state.values.get("autonomy"),
-            "pending_confirmations": [
-                {"interrupt": item.id, **item.value}
-                for item in state.interrupts
-            ],
+            "pending_confirmations": _pending_cards(state),
             "last_message": (
                 messages[-1].content if messages else None
             ),

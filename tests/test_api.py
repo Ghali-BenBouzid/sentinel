@@ -82,6 +82,46 @@ def _app(tmp_path):
     )
 
 
+def _seed_two_models(tmp_path):
+    from sentinel.agents.registry import Registry
+
+    registry = Registry(tmp_path / "models")
+    manifest = registry._read_manifest()
+    manifest.update({"models": ["et-v1", "et-v2"], "active": "et-v1"})
+    registry._write_manifest(manifest)
+    for model_id in ("et-v1", "et-v2"):
+        (registry.root / model_id).mkdir(exist_ok=True)
+
+
+def _batched_guarded_app(tmp_path):
+    from sentinel.agents.agent import build_agent
+    from sentinel.api.app import create_app
+
+    def factory(checkpointer):
+        return build_agent(
+            chat_model=FakeChatModel(messages=iter([
+                AIMessage(content="", tool_calls=[
+                    {"name": "promote", "args": {"model_id": "et-v1"}, "id": "c1"},
+                    {"name": "delete", "args": {"model_id": "et-v2"}, "id": "c2"},
+                ]),
+                AIMessage(content="Confirmed both actions."),
+            ])),
+            train_fn=lambda cfg: _fake_run(tmp_path),
+            retrain_fn=lambda *args: _fake_run(tmp_path),
+            tools_chat_model=FakeChatModel(messages=iter([AIMessage("report")])),
+            ticket_dir=str(tmp_path / "tickets"),
+            models_dir=str(tmp_path / "models"),
+            checkpointer=checkpointer,
+            fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
+        )
+
+    return create_app(
+        agent_factory=factory,
+        checkpointer=MemorySaver(),
+        models_dir=str(tmp_path / "models"),
+    )
+
+
 def _request(app, method, path, **kwargs):
     async def send():
         transport = httpx.ASGITransport(app=app)
@@ -231,3 +271,28 @@ def test_snapshot_returns_transcript(tmp_path):
     assert snap["messages"][0]["content"] == "train"
     for m in snap["messages"]:
         assert m["role"] in ("user", "agent", "tool_result")
+
+
+def test_resume_rejects_incomplete_batched_answers(tmp_path):
+    _seed_two_models(tmp_path)
+    app = _batched_guarded_app(tmp_path)
+    thread_id = _start_session(app, message="promote et-v1 and delete et-v2", autonomy="guarded")
+    snap = _request(app, "GET", f"/sessions/{thread_id}").json()
+    assert len(snap["pending_confirmations"]) == 2
+    first_id = snap["pending_confirmations"][0]["interrupt"]
+    response = _request(
+        app, "POST", f"/sessions/{thread_id}/resume",
+        json={"answers": {first_id: "yes"}},
+    )
+    assert response.status_code == 400
+
+
+def test_snapshot_expands_bundled_confirmations_independently(tmp_path):
+    _seed_two_models(tmp_path)
+    app = _batched_guarded_app(tmp_path)
+    thread_id = _start_session(app, message="promote et-v1 and delete et-v2", autonomy="guarded")
+    cards = _request(app, "GET", f"/sessions/{thread_id}").json()["pending_confirmations"]
+    assert len(cards) == 2
+    assert {c["tool"] for c in cards} == {"promote", "delete"}
+    for card in cards:
+        assert set(card) == {"interrupt", "tool", "detail"}
