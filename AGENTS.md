@@ -101,3 +101,10 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   when the page mounts. A thread id returned by `POST /sessions` belongs to the active
   SSE request and must not flow through `selectThread()`, because that function aborts
   in-flight streams before loading a snapshot. Regression coverage is in `web/src/App.test.tsx`.
+- Checkpointed messages are the durable transcript, not an unbounded model-input
+  contract. `BoundedToolContextMiddleware` projects a bounded request context and clears
+  only older tool results; do not replace it with destructive checkpoint summarization
+  while the API still hydrates chat history from messages. Full leaderboards remain in
+  Registry and reach the UI through its dedicated endpoint. Ordinal agent actions use
+  `leaderboard_candidate`, never a full-table JSON `ToolMessage`. Live SSE and snapshot
+  hydration share `sentinel/api/presentation.py`.

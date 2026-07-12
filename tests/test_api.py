@@ -224,6 +224,25 @@ def _request(app, method, path, **kwargs):
     return asyncio.run(send())
 
 
+def test_cors_allows_vite_fallback_port(tmp_path):
+    app = _app(tmp_path)
+
+    response = _request(
+        app,
+        "OPTIONS",
+        "/sessions",
+        headers={
+            "Origin": "http://localhost:5174",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "http://localhost:5174"
+    )
+
+
 def _start_session(app, message="train", autonomy="guarded") -> str:
     response = _request(
         app, "POST", "/sessions",

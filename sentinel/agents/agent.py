@@ -17,6 +17,7 @@ from langchain.agents.middleware import (
 from ..config import get_settings
 from ..llm.provider import get_chat_model
 from . import domain_context
+from .context import BoundedToolContextMiddleware
 from .harness import (
     InvalidToolCallMiddleware,
     ModelFailureFormatterMiddleware,
@@ -64,13 +65,13 @@ SYSTEM_PROMPT = (
     "rename_session with a short user-facing title. Rename it again only if "
     "the purpose materially changes. Do not mention this bookkeeping action.\n"
     "- A training run compares many model families but registers only the "
-    "winner. To act on a runner-up, inspect the leaderboard internally and use "
-    "the selected row's id.\n"
+    "winner. To act on a runner-up, use leaderboard_candidate with its 1-based "
+    "rank and then use the returned candidate id.\n"
     "- When the user identifies a leaderboard candidate by ordinal rank, treat "
-    "it as a 1-based rank: inspect the leaderboard, select that row's internal "
+    "it as a 1-based rank: call leaderboard_candidate, use the returned internal "
     "id, then continue the user's original requested action. Do not stop after "
-    "inspection and do not dump the raw leaderboard unless the user asked to "
-    "see it.\n"
+    "inspection or lookup. The full table is rendered by the interface, not transported "
+    "through chat.\n"
     "</conversation_workflow>\n\n"
     "<user_facing_communication>\n"
     "- Speak in terms of outcomes the user cares about, not implementation "
@@ -168,6 +169,16 @@ def build_agent(
     settings = get_settings()
     corrective_feedback = make_corrective_feedback(tools_chat_model, registry)
     middleware = [
+        BoundedToolContextMiddleware(
+            trigger_tokens=settings.sentinel_context_edit_trigger_tokens,
+            clear_at_least_tokens=(
+                settings.sentinel_context_edit_clear_at_least_tokens
+            ),
+            keep_tool_results=settings.sentinel_context_edit_keep_tool_results,
+            placeholder=(
+                "[Older tool result omitted; retrieve it again if needed.]"
+            ),
+        ),
         ModelCallLimitMiddleware(
             thread_limit=settings.sentinel_model_call_thread_limit,
             run_limit=settings.sentinel_model_call_run_limit,

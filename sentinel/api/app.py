@@ -13,7 +13,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from ..agents.agent import build_agent
@@ -21,6 +21,7 @@ from ..agents.registry import Registry
 from ..agents.training import run_retraining, run_training
 from ..config import configure_langsmith, get_settings
 from ..llm.provider import get_chat_model
+from .presentation import stream_events, transcript_entry
 
 _QUEUE_DONE = object()
 
@@ -76,35 +77,11 @@ def _sse(event: str, data) -> str:
 
 
 def _transcript(messages) -> list[dict]:
-    out: list[dict] = []
-    for message in messages:
-        if isinstance(message, HumanMessage):
-            out.append({"role": "user", "content": message.content})
-        elif isinstance(message, AIMessage):
-            entry = {"role": "agent", "content": message.content}
-            visible_calls = [
-                call
-                for call in message.tool_calls
-                if call["name"] != "rename_session"
-            ]
-            if visible_calls:
-                entry["tool_calls"] = [
-                    {"name": c["name"], "args": c["args"]}
-                    for c in visible_calls
-                ]
-            if message.content or visible_calls:
-                out.append(entry)
-        elif isinstance(message, ToolMessage):
-            if message.name == "rename_session":
-                continue
-            out.append(
-                {
-                    "role": "tool_result",
-                    "content": message.content,
-                    "name": message.name,
-                }
-            )
-    return out
+    return [
+        entry
+        for message in messages
+        if (entry := transcript_entry(message)) is not None
+    ]
 
 
 def _pending_cards(state) -> list[dict]:
@@ -130,7 +107,7 @@ def create_app(
     app = FastAPI(title="Sentinel V2")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origin_regex=r"http://(?:localhost|127\.0\.0\.1):\d+",
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["x-thread-id"],
@@ -183,32 +160,8 @@ def create_app(
                                 else None
                             )
                             for message in messages or []:
-                                if isinstance(message, AIMessage):
-                                    if getattr(message, "content", ""):
-                                        yield _sse(
-                                            "message",
-                                            {"text": message.content},
-                                        )
-                                    for call in message.tool_calls:
-                                        if call["name"] == "rename_session":
-                                            continue
-                                        yield _sse(
-                                            "tool_call",
-                                            {
-                                                "name": call["name"],
-                                                "args": call["args"],
-                                            },
-                                        )
-                                elif isinstance(message, ToolMessage):
-                                    if message.name == "rename_session":
-                                        continue
-                                    yield _sse(
-                                        "tool_result",
-                                        {
-                                            "name": message.name,
-                                            "text": message.content,
-                                        },
-                                    )
+                                for event, data in stream_events(message):
+                                    yield _sse(event, data)
             except Exception as error:  # noqa: BLE001
                 yield _sse(
                     "error",

@@ -334,7 +334,9 @@ def test_third_ranked_model_can_be_inspected_then_retrained(tmp_path):
     scripted = [
         AIMessage(
             content="",
-            tool_calls=[_tc("inspect", {"what": "leaderboard"}, "inspect-1")],
+            tool_calls=[
+                _tc("leaderboard_candidate", {"rank": 3}, "inspect-1")
+            ],
         ),
         AIMessage(
             content="",
