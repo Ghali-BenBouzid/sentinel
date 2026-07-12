@@ -9,12 +9,22 @@ from collections.abc import Callable
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from .registry import Registry
 
 _MISSING_PROPERTIES = re.compile(r"missing properties:\s*(.+?)\]")
 _QUOTED = re.compile(r"'([^']+)'")
+_AUTH_ERROR = re.compile(
+    r"api[_ -]?key|auth[_ -]?token|authentication failed|invalid token|"
+    r"request headers",
+    re.IGNORECASE,
+)
 
 
 def guarded_when(tool_name: str):
@@ -83,6 +93,11 @@ class InvalidToolCallMiddleware(AgentMiddleware):
 def _tier1_template(error: Exception, registry: Registry) -> str | None:
     """Return deterministic feedback for a recognized error shape."""
     text = str(error)
+    if _AUTH_ERROR.search(text):
+        return (
+            "The language-model provider configuration is unavailable or "
+            "invalid. Retry after the operator verifies provider configuration."
+        )
     if (match := _MISSING_PROPERTIES.search(text)) is not None:
         fields = _QUOTED.findall(match.group(1))
         if fields:
@@ -100,15 +115,26 @@ def _tier1_template(error: Exception, registry: Registry) -> str | None:
     return None
 
 
+_CORRECTIVE_SYSTEM_PROMPT = (
+    "You produce private corrective feedback for an autonomous agent after an "
+    "internal model or tool call fails. Identify only what the supplied error "
+    "supports. Give one concrete action the agent itself can take next. Never "
+    "invent missing values, claim the failed action succeeded, expose a stack "
+    "trace, or instruct the end user to invoke internal tools. Return exactly "
+    "one concise sentence with no preamble."
+)
+
+
 def _tier2_cheap_model(error: Exception, tools_chat_model: BaseChatModel) -> str:
     """Ask the cheap-tier model to summarize an unrecognized error."""
     prompt = (
         "An internal call just failed with this error:\n\n"
         f"{error}\n\n"
-        "In one sentence, tell the agent what went wrong and what to try next. "
-        "Do not mention exception types or stack traces."
+        "State what failed and the safest supported next action."
     )
-    response = tools_chat_model.invoke([HumanMessage(prompt)])
+    response = tools_chat_model.invoke(
+        [SystemMessage(_CORRECTIVE_SYSTEM_PROMPT), HumanMessage(prompt)]
+    )
     return str(response.content)
 
 
@@ -121,6 +147,12 @@ def make_corrective_feedback(
         templated = _tier1_template(error, registry)
         if templated is not None:
             return templated
-        return _tier2_cheap_model(error, tools_chat_model)
+        try:
+            return _tier2_cheap_model(error, tools_chat_model)
+        except Exception:  # noqa: BLE001
+            return (
+                "The language-model service is temporarily unavailable. "
+                "Retry shortly; if it persists, verify provider configuration."
+            )
 
     return corrective_feedback

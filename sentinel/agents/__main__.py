@@ -10,7 +10,7 @@ import argparse
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from ..config import get_settings
+from ..config import configure_langsmith, get_settings
 from ..llm.provider import get_chat_model
 from .agent import build_agent
 from .training import run_retraining, run_training
@@ -37,6 +37,7 @@ def run_turn(agent, thread, inp, out=print) -> bool:
 
 
 def main() -> None:
+    configure_langsmith()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--autonomous",

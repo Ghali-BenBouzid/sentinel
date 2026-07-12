@@ -58,3 +58,12 @@ def test_unknown_provider_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         get_chat_model("smart")
+
+
+def test_default_fallback_is_disabled_without_alternate_provider_key(monkeypatch):
+    monkeypatch.setenv("SENTINEL_LLM_PROVIDER", "groq")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _clear()
+    from sentinel.agents.agent import _default_fallback_model
+
+    assert _default_fallback_model() is None

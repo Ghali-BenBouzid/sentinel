@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import pandas as pd
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
+from langgraph.types import Command
 
 from ..core import automl
 from . import monitor as monitor_mod
@@ -66,6 +70,25 @@ def make_tools(
         return (
             f"No model '{model_id}' in the registry. "
             f"Known: {registry.list()}"
+        )
+
+    @tool
+    def rename_session(title: str, runtime: ToolRuntime) -> Command:
+        """Set a short, user-facing title for the current conversation."""
+        clean = " ".join(title.split()).strip()[:60]
+        if not clean:
+            clean = "Untitled session"
+        return Command(
+            update={
+                "title": clean,
+                "messages": [
+                    ToolMessage(
+                        content=f"Session renamed to: {clean}",
+                        tool_call_id=runtime.tool_call_id
+                        or "rename_session",
+                    )
+                ],
+            }
         )
 
     @tool
@@ -315,6 +338,7 @@ def make_tools(
         )
 
     return [
+        rename_session,
         save_config,
         train,
         retrain,

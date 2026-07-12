@@ -141,6 +141,35 @@ def test_autonomy_persists_across_turns(tmp_path):
     assert "Promoted" in final["messages"][-1].content
 
 
+def test_agent_can_rename_session_in_checkpointed_state(tmp_path):
+    scripted = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                _tc(
+                    "rename_session",
+                    {"title": "Turbofan RUL baseline"},
+                    "rename-1",
+                )
+            ],
+        ),
+        AIMessage(content="I understand the task."),
+    ]
+    agent = _build(tmp_path, scripted)
+    thread = {"configurable": {"thread_id": "named-thread"}}
+
+    final = agent.invoke(
+        {
+            "messages": [HumanMessage("Build an RUL baseline for FD001")],
+            "autonomy": "guarded",
+        },
+        thread,
+    )
+
+    assert final["title"] == "Turbofan RUL baseline"
+    assert agent.get_state(thread).values["title"] == "Turbofan RUL baseline"
+
+
 def test_guarded_confirmation_interrupt_and_mapped_resume(tmp_path):
     scripted = [
         AIMessage(content="", tool_calls=[_tc("train", {}, "c1")]),
@@ -273,3 +302,72 @@ def test_model_call_failure_ends_gracefully_instead_of_crashing(tmp_path):
     assert "failure_threshold" in last.content
     assert "BadRequestError" not in last.content
     assert "Traceback" not in last.content
+
+
+def test_third_ranked_model_can_be_inspected_then_retrained(tmp_path):
+    from sentinel.agents.agent import build_agent
+    from sentinel.agents.registry import Registry
+
+    models_dir = tmp_path / "models"
+    registry = Registry(models_dir)
+    source = tmp_path / "active.pkl"
+    source.write_bytes(b"model")
+    registry.register(
+        family="et",
+        model_path=source,
+        metrics={"rmse": 15.2, "mae": 10.8, "r2": 0.86},
+        leaderboard=[
+            {"id": "et", "Model": "Extra Trees", "RMSE": 15.2},
+            {"id": "rf", "Model": "Random Forest", "RMSE": 16.0},
+            {"id": "lightgbm", "Model": "LightGBM", "RMSE": 16.4},
+        ],
+        provenance={
+            "source": "train",
+            "model_id": "et",
+            "hyperparameters": {},
+            "config": {"rul_cap": 125, "window": 5},
+            "parent": None,
+        },
+        test_eval=[{"RUL": 40.0}],
+    )
+    retrained = []
+    scripted = [
+        AIMessage(
+            content="",
+            tool_calls=[_tc("inspect", {"what": "leaderboard"}, "inspect-1")],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                _tc(
+                    "retrain",
+                    {"model_id": "lightgbm", "hyperparameters": {}},
+                    "retrain-1",
+                )
+            ],
+        ),
+        AIMessage(content="Retrained the third-ranked candidate."),
+    ]
+    agent = build_agent(
+        chat_model=FakeChatModel(messages=iter(scripted)),
+        train_fn=lambda cfg: _fake_training_run(tmp_path),
+        retrain_fn=lambda model_id, *args: (
+            retrained.append(model_id) or _fake_training_run(tmp_path, rmse=16.0)
+        ),
+        tools_chat_model=FakeChatModel(messages=iter([AIMessage("unused")])),
+        ticket_dir=str(tmp_path / "tickets"),
+        models_dir=str(models_dir),
+        checkpointer=MemorySaver(),
+        fallback_chat_model=FakeChatModel(messages=iter([AIMessage("unused")])),
+    )
+
+    final = agent.invoke(
+        {
+            "messages": [HumanMessage("Retrain the third-best model")],
+            "autonomy": "autonomous",
+        },
+        {"configurable": {"thread_id": "third-ranked"}},
+    )
+
+    assert retrained == ["lightgbm"]
+    assert "third-ranked" in final["messages"][-1].content

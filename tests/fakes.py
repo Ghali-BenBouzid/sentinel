@@ -1,6 +1,8 @@
 """Offline test doubles for the V2 agent."""
 from __future__ import annotations
 
+import time
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 
@@ -9,6 +11,20 @@ class FakeChatModel(GenericFakeChatModel):
 
     def bind_tools(self, *args, **kwargs):
         return self
+
+
+class SlowFakeChatModel(FakeChatModel):
+    """A scripted chat model whose sync call blocks, like a real HTTP round trip.
+
+    Used to prove requests are handled concurrently rather than serialized
+    behind one blocking generate() call.
+    """
+
+    delay_seconds: float = 1.0
+
+    def _generate(self, *args, **kwargs):
+        time.sleep(self.delay_seconds)
+        return super()._generate(*args, **kwargs)
 
 
 class RaisingThenFakeChatModel(FakeChatModel):

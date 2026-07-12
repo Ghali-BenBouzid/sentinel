@@ -83,6 +83,38 @@ def test_tier2_falls_back_to_cheap_model_for_unrecognized_errors(tmp_path):
     assert message == "The disk is full; try again shortly."
 
 
+def test_corrective_feedback_never_raises_when_cheap_model_is_unavailable(tmp_path):
+    class UnavailableModel:
+        def invoke(self, messages):
+            raise ValueError(
+                "Add a valid api_key (or auth_token) to the request headers"
+            )
+
+    feedback = make_corrective_feedback(
+        tools_chat_model=UnavailableModel(),
+        registry=_registry(tmp_path, []),
+    )
+
+    message = feedback(OSError("provider temporarily unavailable"))
+
+    assert "temporarily unavailable" in message.lower()
+    assert "api_key" not in message
+
+
+def test_authentication_errors_are_formatted_without_secret_setup_instructions(tmp_path):
+    feedback = make_corrective_feedback(
+        tools_chat_model=FakeChatModel(messages=iter([AIMessage("unused")])),
+        registry=_registry(tmp_path, []),
+    )
+
+    message = feedback(
+        ValueError("Add a valid api_key (or auth_token) to the request headers")
+    )
+
+    assert "provider configuration" in message.lower()
+    assert "api_key" not in message
+
+
 class _InvalidToolCallChatModel(FakeChatModel):
     already_corrupted: bool = False
 

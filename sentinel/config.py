@@ -11,6 +11,7 @@ The Groq key deliberately accepts both `GROQ_API_KEY` (canonical) and
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
@@ -61,8 +62,50 @@ class Settings(BaseSettings):
     # Harness middleware: retry attempts for a failed model call.
     sentinel_retry_max_attempts: int = 2
 
+    # LangSmith reads these canonical names directly from os.environ. Sentinel
+    # keeps them in its settings layer first, then exports only this allowlist
+    # at process entrypoints via configure_langsmith().
+    sentinel_langsmith_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SENTINEL_LANGSMITH_API_KEY", "LANGSMITH_API_KEY"
+        ),
+    )
+    sentinel_langsmith_tracing: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "SENTINEL_LANGSMITH_TRACING", "LANGSMITH_TRACING"
+        ),
+    )
+    sentinel_langsmith_project: str = Field(
+        default="sentinel",
+        validation_alias=AliasChoices(
+            "SENTINEL_LANGSMITH_PROJECT", "LANGSMITH_PROJECT"
+        ),
+    )
+    sentinel_langsmith_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SENTINEL_LANGSMITH_ENDPOINT", "LANGSMITH_ENDPOINT"
+        ),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Return the cached `Settings` (env + `.env`)."""
     return Settings()
+
+
+def configure_langsmith(settings: Settings | None = None) -> None:
+    """Export Sentinel's LangSmith allowlist for the LangSmith SDK."""
+    settings = settings or get_settings()
+    values = {
+        "LANGSMITH_API_KEY": settings.sentinel_langsmith_api_key,
+        "LANGSMITH_TRACING": str(settings.sentinel_langsmith_tracing).lower(),
+        "LANGSMITH_PROJECT": settings.sentinel_langsmith_project,
+        "LANGSMITH_ENDPOINT": settings.sentinel_langsmith_endpoint,
+    }
+    for name, value in values.items():
+        if value is not None:
+            os.environ[name] = value
