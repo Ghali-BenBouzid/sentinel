@@ -9,7 +9,7 @@ import pandas as pd
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from tests.fakes import FakeChatModel
+from tests.fakes import FakeChatModel, SlowFakeChatModel
 
 
 def _fake_run(tmp_path):
@@ -41,7 +41,7 @@ def _sse_events(response):
             yield json.loads(line[6:])
 
 
-def _app(tmp_path):
+def _app(tmp_path, checkpointer=None):
     from sentinel.agents.agent import build_agent
     from sentinel.api.app import create_app
 
@@ -73,6 +73,63 @@ def _app(tmp_path):
             models_dir=str(tmp_path / "models"),
             checkpointer=checkpointer,
             fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
+        )
+
+    return create_app(
+        agent_factory=factory,
+        checkpointer=checkpointer or MemorySaver(),
+        models_dir=str(tmp_path / "models"),
+    )
+
+
+def _slow_app(tmp_path, delay_seconds=1.0):
+    """An app whose model call blocks synchronously, like a real HTTP round trip."""
+    from sentinel.agents.agent import build_agent
+    from sentinel.api.app import create_app
+
+    def factory(checkpointer):
+        return build_agent(
+            chat_model=SlowFakeChatModel(
+                messages=iter([AIMessage("hi"), AIMessage("hi")]),
+                delay_seconds=delay_seconds,
+            ),
+            train_fn=lambda cfg: _fake_run(tmp_path),
+            retrain_fn=lambda *args: _fake_run(tmp_path),
+            tools_chat_model=FakeChatModel(messages=iter([AIMessage("report")])),
+            ticket_dir=str(tmp_path / "tickets"),
+            models_dir=str(tmp_path / "models"),
+            checkpointer=checkpointer,
+            fallback_chat_model=FakeChatModel(messages=iter([AIMessage("fallback unused")])),
+        )
+
+    return create_app(
+        agent_factory=factory,
+        checkpointer=MemorySaver(),
+        models_dir=str(tmp_path / "models"),
+    )
+
+
+def _renaming_app(tmp_path):
+    from sentinel.agents.agent import build_agent
+    from sentinel.api.app import create_app
+
+    def factory(checkpointer):
+        return build_agent(
+            chat_model=FakeChatModel(messages=iter([
+                AIMessage(content="", tool_calls=[{
+                    "name": "rename_session",
+                    "args": {"title": "FD001 health baseline"},
+                    "id": "rename-1",
+                }]),
+                AIMessage(content="Ready."),
+            ])),
+            train_fn=lambda cfg: _fake_run(tmp_path),
+            retrain_fn=lambda *args: _fake_run(tmp_path),
+            tools_chat_model=FakeChatModel(messages=iter([AIMessage("report")])),
+            ticket_dir=str(tmp_path / "tickets"),
+            models_dir=str(tmp_path / "models"),
+            checkpointer=checkpointer,
+            fallback_chat_model=FakeChatModel(messages=iter([AIMessage("unused")])),
         )
 
     return create_app(
@@ -119,6 +176,40 @@ def _batched_guarded_app(tmp_path):
         agent_factory=factory,
         checkpointer=MemorySaver(),
         models_dir=str(tmp_path / "models"),
+    )
+
+
+def test_slow_turns_are_not_serialized(tmp_path):
+    """Two slow in-flight chat turns must run concurrently, not queue behind each other.
+
+    Regression test: the SSE route used to run the graph's blocking sync
+    .stream() call directly inside an async endpoint, which occupies the
+    single event-loop thread for the whole turn - a second unrelated
+    request (a different session, the autonomy toggle, a snapshot fetch)
+    could not even be scheduled until the first turn fully finished. Two
+    turns that each take `delay_seconds` should together take close to
+    `delay_seconds`, not `2 * delay_seconds`.
+    """
+    delay_seconds = 0.6
+    app = _slow_app(tmp_path, delay_seconds=delay_seconds)
+
+    async def run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            start = asyncio.get_event_loop().time()
+            responses = await asyncio.gather(
+                client.post("/sessions", json={"message": "a"}),
+                client.post("/sessions", json={"message": "b"}),
+            )
+            return responses, asyncio.get_event_loop().time() - start
+
+    responses, elapsed = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert elapsed < 1.5 * delay_seconds, (
+        f"two {delay_seconds}s turns took {elapsed:.2f}s combined - they were "
+        "serialized behind one blocking event loop instead of running concurrently"
     )
 
 
@@ -259,7 +350,51 @@ def test_list_sessions(tmp_path):
     ids = {s["thread_id"] for s in sessions}
     assert {a, b} <= ids
     for s in sessions:
-        assert set(s) == {"thread_id", "autonomy", "last_message"}
+        assert set(s) == {"thread_id", "autonomy", "last_message", "title"}
+
+
+def test_list_sessions_uses_agent_assigned_title(tmp_path):
+    app = _renaming_app(tmp_path)
+    thread_id = _start_session(app)
+
+    sessions = _request(app, "GET", "/sessions").json()["sessions"]
+    session = next(item for item in sessions if item["thread_id"] == thread_id)
+
+    assert session["title"] == "FD001 health baseline"
+    snapshot = _request(app, "GET", f"/sessions/{thread_id}").json()
+    assert all(
+        message.get("name") != "rename_session"
+        for message in snapshot["messages"]
+    )
+
+
+def test_list_sessions_with_sqlite_checkpointer_does_not_deadlock(tmp_path):
+    """Regression: SqliteSaver.list() holds its cursor lock open for the whole
+    generator; calling get_state() (which needs that same non-reentrant lock)
+    while still iterating it deadlocks the thread against itself. MemorySaver
+    (used by the other tests) doesn't have this lock, so it never caught this.
+    """
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    checkpointer = SqliteSaver(
+        sqlite3.connect(str(tmp_path / "checkpoints.sqlite"), check_same_thread=False)
+    )
+    app = _app(tmp_path, checkpointer=checkpointer)
+    thread_id = _start_session(app)
+
+    async def run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await asyncio.wait_for(client.get("/sessions"), timeout=3)
+
+    response = asyncio.run(run())
+    assert response.status_code == 200
+    ids = {s["thread_id"] for s in response.json()["sessions"]}
+    assert thread_id in ids
 
 
 def test_snapshot_returns_transcript(tmp_path):
@@ -276,12 +411,16 @@ def test_snapshot_returns_transcript(tmp_path):
 def test_resume_rejects_incomplete_batched_answers(tmp_path):
     _seed_two_models(tmp_path)
     app = _batched_guarded_app(tmp_path)
-    thread_id = _start_session(app, message="promote et-v1 and delete et-v2", autonomy="guarded")
+    thread_id = _start_session(
+        app, message="promote et-v1 and delete et-v2", autonomy="guarded"
+    )
     snap = _request(app, "GET", f"/sessions/{thread_id}").json()
     assert len(snap["pending_confirmations"]) == 2
     first_id = snap["pending_confirmations"][0]["interrupt"]
     response = _request(
-        app, "POST", f"/sessions/{thread_id}/resume",
+        app,
+        "POST",
+        f"/sessions/{thread_id}/resume",
         json={"answers": {first_id: "yes"}},
     )
     assert response.status_code == 400
@@ -290,8 +429,12 @@ def test_resume_rejects_incomplete_batched_answers(tmp_path):
 def test_snapshot_expands_bundled_confirmations_independently(tmp_path):
     _seed_two_models(tmp_path)
     app = _batched_guarded_app(tmp_path)
-    thread_id = _start_session(app, message="promote et-v1 and delete et-v2", autonomy="guarded")
-    cards = _request(app, "GET", f"/sessions/{thread_id}").json()["pending_confirmations"]
+    thread_id = _start_session(
+        app, message="promote et-v1 and delete et-v2", autonomy="guarded"
+    )
+    cards = _request(app, "GET", f"/sessions/{thread_id}").json()[
+        "pending_confirmations"
+    ]
     assert len(cards) == 2
     assert {c["tool"] for c in cards} == {"promote", "delete"}
     for card in cards:

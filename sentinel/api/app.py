@@ -5,7 +5,9 @@ pending interrupt ids. Session autonomy is set once and checkpointed.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import uuid
 
 from fastapi import FastAPI, HTTPException
@@ -17,8 +19,42 @@ from langgraph.types import Command
 from ..agents.agent import build_agent
 from ..agents.registry import Registry
 from ..agents.training import run_retraining, run_training
-from ..config import get_settings
+from ..config import configure_langsmith, get_settings
 from ..llm.provider import get_chat_model
+
+_QUEUE_DONE = object()
+
+
+async def _iter_in_thread(sync_iterable):
+    """Drain a blocking iterator on a worker thread, yielding items as they arrive.
+
+    The compiled graph's checkpointer (SqliteSaver) and chat model calls are
+    synchronous; running them directly inside an async route would occupy the
+    single event-loop thread for the whole turn and stall every other request
+    on the server. This keeps that blocking work off the loop while still
+    streaming each chunk to the client as soon as it's produced.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def worker():
+        try:
+            for item in sync_iterable:
+                loop.call_soon_threadsafe(queue.put_nowait, (True, item))
+        except Exception as exc:  # noqa: BLE001
+            loop.call_soon_threadsafe(queue.put_nowait, (False, exc))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, _QUEUE_DONE)
+
+    threading.Thread(target=worker, daemon=True).start()
+    while True:
+        item = await queue.get()
+        if item is _QUEUE_DONE:
+            return
+        ok, payload = item
+        if not ok:
+            raise payload
+        yield payload
 
 
 def _default_factory(checkpointer):
@@ -46,13 +82,21 @@ def _transcript(messages) -> list[dict]:
             out.append({"role": "user", "content": message.content})
         elif isinstance(message, AIMessage):
             entry = {"role": "agent", "content": message.content}
-            if message.tool_calls:
+            visible_calls = [
+                call
+                for call in message.tool_calls
+                if call["name"] != "rename_session"
+            ]
+            if visible_calls:
                 entry["tool_calls"] = [
                     {"name": c["name"], "args": c["args"]}
-                    for c in message.tool_calls
+                    for c in visible_calls
                 ]
-            out.append(entry)
+            if message.content or visible_calls:
+                out.append(entry)
         elif isinstance(message, ToolMessage):
+            if message.name == "rename_session":
+                continue
             out.append(
                 {
                     "role": "tool_result",
@@ -82,6 +126,7 @@ def create_app(
     agent_factory=None, checkpointer=None, models_dir="artifacts/models"
 ) -> FastAPI:
     """Build the API around one process-lifetime compiled agent."""
+    configure_langsmith()
     app = FastAPI(title="Sentinel V2")
     app.add_middleware(
         CORSMiddleware,
@@ -94,70 +139,92 @@ def create_app(
     factory = agent_factory or _default_factory
     agent = factory(checkpointer)
 
+    thread_locks: dict[str, asyncio.Lock] = {}
+
     def _thread(thread_id: str) -> dict:
         return {"configurable": {"thread_id": thread_id}}
 
-    def _require(thread: dict) -> None:
-        if agent.get_state(thread).created_at is None:
+    def _lock_for(thread_id: str) -> asyncio.Lock:
+        # Two mutating requests against the same thread_id now run
+        # concurrently (that's the point - see _iter_in_thread above), but
+        # LangGraph checkpoints for one thread aren't safe for concurrent
+        # writers: each request reads the latest checkpoint as its parent,
+        # so two in-flight writes silently lose one of them (e.g. an
+        # autonomy toggle clicked mid-turn gets clobbered when the turn's
+        # own checkpoint commits after it). Serialize same-thread writes;
+        # different threads still run fully in parallel.
+        return thread_locks.setdefault(thread_id, asyncio.Lock())
+
+    async def _require(thread: dict) -> None:
+        state = await asyncio.to_thread(agent.get_state, thread)
+        if state.created_at is None:
             raise HTTPException(
                 status_code=404, detail="unknown session"
             )
 
     async def _stream(graph_input, thread):
-        try:
-            for mode, chunk in agent.stream(
-                graph_input,
-                thread,
-                stream_mode=["custom", "updates"],
-            ):
-                if mode == "custom":
-                    yield _sse(chunk.get("type", "notify"), chunk)
-                elif mode == "updates":
-                    for update in (chunk or {}).values():
-                        messages = (
-                            update.get("messages")
-                            if isinstance(update, dict)
-                            else None
-                        )
-                        for message in messages or []:
-                            if isinstance(message, AIMessage):
-                                if getattr(message, "content", ""):
+        lock = _lock_for(thread["configurable"]["thread_id"])
+        async with lock:
+            try:
+                async for mode, chunk in _iter_in_thread(
+                    agent.stream(
+                        graph_input,
+                        thread,
+                        stream_mode=["custom", "updates"],
+                    )
+                ):
+                    if mode == "custom":
+                        yield _sse(chunk.get("type", "notify"), chunk)
+                    elif mode == "updates":
+                        for update in (chunk or {}).values():
+                            messages = (
+                                update.get("messages")
+                                if isinstance(update, dict)
+                                else None
+                            )
+                            for message in messages or []:
+                                if isinstance(message, AIMessage):
+                                    if getattr(message, "content", ""):
+                                        yield _sse(
+                                            "message",
+                                            {"text": message.content},
+                                        )
+                                    for call in message.tool_calls:
+                                        if call["name"] == "rename_session":
+                                            continue
+                                        yield _sse(
+                                            "tool_call",
+                                            {
+                                                "name": call["name"],
+                                                "args": call["args"],
+                                            },
+                                        )
+                                elif isinstance(message, ToolMessage):
+                                    if message.name == "rename_session":
+                                        continue
                                     yield _sse(
-                                        "message",
-                                        {"text": message.content},
-                                    )
-                                for call in message.tool_calls:
-                                    yield _sse(
-                                        "tool_call",
+                                        "tool_result",
                                         {
-                                            "name": call["name"],
-                                            "args": call["args"],
+                                            "name": message.name,
+                                            "text": message.content,
                                         },
                                     )
-                            elif isinstance(message, ToolMessage):
-                                yield _sse(
-                                    "tool_result",
-                                    {
-                                        "name": message.name,
-                                        "text": message.content,
-                                    },
-                                )
-        except Exception as error:  # noqa: BLE001
-            yield _sse(
-                "error",
-                {
-                    "message": (
-                        f"{type(error).__name__}: {error}"
-                    )
-                },
-            )
-            return
-        state = agent.get_state(thread)
-        if state.interrupts:
-            for card in _pending_cards(state):
-                yield _sse("confirm", card)
-        else:
-            yield _sse("done", {})
+            except Exception as error:  # noqa: BLE001
+                yield _sse(
+                    "error",
+                    {
+                        "message": (
+                            f"{type(error).__name__}: {error}"
+                        )
+                    },
+                )
+                return
+            state = await asyncio.to_thread(agent.get_state, thread)
+            if state.interrupts:
+                for card in _pending_cards(state):
+                    yield _sse("confirm", card)
+            else:
+                yield _sse("done", {})
 
     @app.post("/sessions")
     async def start(body: dict | None = None):
@@ -180,10 +247,13 @@ def create_app(
             headers={"x-thread-id": thread_id},
         )
 
-    @app.get("/sessions")
-    async def list_sessions():
+    def _list_sessions_sync() -> list[dict]:
         seen: dict[str, dict] = {}
-        for item in agent.checkpointer.list(None):
+        # Materialize fully before the loop: SqliteSaver.list() holds its
+        # cursor lock open for the whole generator, and get_state() below
+        # needs that same (non-reentrant) lock - interleaving the two
+        # deadlocks a thread against itself.
+        for item in list(agent.checkpointer.list(None)):
             tid = item.config["configurable"]["thread_id"]
             if tid in seen:
                 continue
@@ -191,6 +261,7 @@ def create_app(
             messages = state.values.get("messages", [])
             seen[tid] = {
                 "thread_id": tid,
+                "title": state.values.get("title"),
                 "autonomy": state.values.get("autonomy"),
                 "last_message": (
                     messages[-1].content if messages else None
@@ -198,17 +269,19 @@ def create_app(
                 "_ts": state.created_at or "",
             }
         ordered = sorted(seen.values(), key=lambda s: s["_ts"], reverse=True)
-        return {
-            "sessions": [
-                {k: v for k, v in s.items() if k != "_ts"}
-                for s in ordered
-            ]
-        }
+        return [
+            {k: v for k, v in s.items() if k != "_ts"}
+            for s in ordered
+        ]
+
+    @app.get("/sessions")
+    async def list_sessions():
+        return {"sessions": await asyncio.to_thread(_list_sessions_sync)}
 
     @app.post("/sessions/{thread_id}/message")
     async def message(thread_id: str, body: dict):
         thread = _thread(thread_id)
-        _require(thread)
+        await _require(thread)
         graph_input = {
             "messages": [HumanMessage(body["message"])]
         }
@@ -221,8 +294,8 @@ def create_app(
     @app.post("/sessions/{thread_id}/resume")
     async def resume(thread_id: str, body: dict):
         thread = _thread(thread_id)
-        _require(thread)
-        state = agent.get_state(thread)
+        await _require(thread)
+        state = await asyncio.to_thread(agent.get_state, thread)
         if not state.interrupts:
             raise HTTPException(status_code=400, detail="no confirmation is pending")
         request = state.interrupts[0].value
@@ -240,7 +313,10 @@ def create_app(
         for composite_id, answer in answers.items():
             base, _, index = composite_id.rpartition(":")
             if base != interrupt_id or not index.isdigit():
-                raise HTTPException(status_code=400, detail=f"unknown confirmation id {composite_id!r}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown confirmation id {composite_id!r}",
+                )
             by_index[int(index)] = answer
         if sorted(by_index) != list(range(expected)):
             raise HTTPException(
@@ -248,7 +324,8 @@ def create_app(
                 detail=f"expected answers for all {expected} pending confirmation(s), got {sorted(by_index)}",
             )
         decisions = [
-            {"type": "approve"} if by_index[i].strip().lower() in {"y", "yes"}
+            {"type": "approve"}
+            if by_index[i].strip().lower() in {"y", "yes"}
             else {"type": "reject"}
             for i in range(expected)
         ]
@@ -261,23 +338,25 @@ def create_app(
     @app.post("/sessions/{thread_id}/autonomy")
     async def set_autonomy(thread_id: str, body: dict):
         thread = _thread(thread_id)
-        _require(thread)
+        await _require(thread)
         value = body.get("autonomy")
         if value not in ("guarded", "autonomous"):
             raise HTTPException(
                 status_code=400,
                 detail="autonomy must be 'guarded' or 'autonomous'",
             )
-        agent.update_state(thread, {"autonomy": value})
+        async with _lock_for(thread_id):
+            await asyncio.to_thread(agent.update_state, thread, {"autonomy": value})
         return {"autonomy": value}
 
     @app.get("/sessions/{thread_id}")
     async def snapshot(thread_id: str):
         thread = _thread(thread_id)
-        _require(thread)
-        state = agent.get_state(thread)
+        await _require(thread)
+        state = await asyncio.to_thread(agent.get_state, thread)
         messages = state.values.get("messages", [])
         return {
+            "title": state.values.get("title"),
             "autonomy": state.values.get("autonomy"),
             "pending_confirmations": _pending_cards(state),
             "last_message": (
