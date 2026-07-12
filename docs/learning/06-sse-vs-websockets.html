@@ -1,0 +1,714 @@
+<title>SSE, Decoded — Sentinel</title>
+<style>
+  :root {
+    --ink: #12161c;
+    --paper: #eef1f0;
+    --panel: #ffffff;
+    --panel-2: #e4e8e5;
+    --line: #d2d8d3;
+    --muted: #52585b;
+    --accent: #2c6e8f;
+    --accent-ink: #ffffff;
+    --ok: #3f7f52;
+    --warn: #a9701f;
+    --critical: #a83f34;
+    --code-bg: #12161c;
+    --code-ink: #e7ece9;
+    --code-accent: #7fc4b8;
+    --font-display: "Helvetica Neue", "Arial Narrow", "Segoe UI Semibold", -apple-system, sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e9ecea;
+      --paper: #12161c;
+      --panel: #1a2129;
+      --panel-2: #212a33;
+      --line: #2c3540;
+      --muted: #a3aeb2;
+      --accent: #6fb3d6;
+      --accent-ink: #0d1013;
+      --ok: #6dbf85;
+      --warn: #e3ab5c;
+      --critical: #e0776a;
+      --code-bg: #0c1014;
+      --code-ink: #dfe6e2;
+      --code-accent: #7fc4b8;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e9ecea;
+    --paper: #12161c;
+    --panel: #1a2129;
+    --panel-2: #212a33;
+    --line: #2c3540;
+    --muted: #a3aeb2;
+    --accent: #6fb3d6;
+    --accent-ink: #0d1013;
+    --ok: #6dbf85;
+    --warn: #e3ab5c;
+    --critical: #e0776a;
+    --code-bg: #0c1014;
+    --code-ink: #dfe6e2;
+    --code-accent: #7fc4b8;
+  }
+  :root[data-theme="light"] {
+    --ink: #12161c;
+    --paper: #eef1f0;
+    --panel: #ffffff;
+    --panel-2: #e4e8e5;
+    --line: #d2d8d3;
+    --muted: #52585b;
+    --accent: #2c6e8f;
+    --accent-ink: #ffffff;
+    --ok: #3f7f52;
+    --warn: #a9701f;
+    --critical: #a83f34;
+    --code-bg: #12161c;
+    --code-ink: #e7ece9;
+    --code-accent: #7fc4b8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .masthead { border-bottom: 1px solid var(--line); padding: 2.4rem 1.5rem 1.8rem; }
+  .masthead-inner { max-width: 78rem; margin: 0 auto; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.6rem;
+  }
+  h1.title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-stretch: condensed;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    font-size: clamp(1.9rem, 4vw, 2.9rem);
+    margin: 0 0 0.5rem;
+  }
+  .dek { max-width: 52rem; color: var(--muted); font-size: 1.05rem; margin: 0; }
+  .meta-row {
+    display: flex;
+    gap: 1.4rem;
+    flex-wrap: wrap;
+    margin-top: 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .meta-row b { color: var(--ink); }
+
+  .layout {
+    max-width: 78rem;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+    gap: 2.5rem;
+    padding: 2rem 1.5rem 5rem;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    nav.toc { position: static; order: 2; }
+  }
+
+  nav.toc {
+    position: sticky;
+    top: 1.5rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    padding: 1rem 1.1rem;
+    min-width: 0;
+  }
+  nav.toc .toc-label {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.7rem;
+  }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+  nav.toc a {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.88rem;
+    display: block;
+    border-left: 2px solid transparent;
+    padding-left: 0.6rem;
+  }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+
+  main { min-width: 0; }
+  section { margin-bottom: 3.2rem; scroll-margin-top: 1.5rem; }
+  section > .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 0.6rem;
+  }
+  .section-tag {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  h2 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-stretch: condensed;
+    font-size: 1.5rem;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 { font-family: var(--font-display); font-weight: 700; font-size: 1.12rem; margin: 1.6rem 0 0.6rem; }
+  p { max-width: 68ch; margin: 0 0 1rem; }
+  section > p, section > .prose > p { max-width: 68ch; }
+  ul, ol.plain { max-width: 68ch; padding-left: 1.3rem; margin: 0 0 1rem; }
+  li { margin-bottom: 0.4rem; }
+  .prose strong { color: var(--ink); }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.87em;
+    background: var(--panel-2);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    max-width: 100%;
+    margin: 0.9rem 0 1.2rem;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  pre .c { color: var(--code-accent); }
+  pre .k { color: #e3ab5c; }
+
+  .callout {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    max-width: 68ch;
+    margin: 1rem 0 1.3rem;
+  }
+  .callout .callout-label {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.4rem;
+  }
+  .callout.finding .callout-label { color: var(--warn); }
+  .callout p:last-child { margin-bottom: 0; }
+
+  .table-wrap { overflow-x: auto; margin: 1rem 0 1.6rem; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; font-size: 0.88rem; }
+  thead th {
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--panel-2);
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody td { padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--line); background: var(--panel); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { font-weight: 600; white-space: nowrap; }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 100px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .chip.sse { color: var(--accent); }
+  .chip.ws { color: var(--warn); }
+  .chip.both { color: var(--ok); }
+  .chip.neither { color: var(--muted); }
+
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr)); gap: 1rem; margin: 1rem 0 1.6rem; }
+  .card { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 1rem 1.1rem; }
+  .card h4 { font-family: var(--font-mono); font-size: 0.85rem; margin: 0 0 0.3rem; color: var(--accent); }
+  .card p { font-size: 0.86rem; color: var(--muted); margin: 0 0 0.5rem; max-width: none; }
+  .card .imp {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--ink);
+    background: var(--panel-2);
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+
+  .frame-diagram {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 6px;
+    padding: 1.1rem 1.3rem;
+    margin: 1rem 0 1.6rem;
+    overflow-x: auto;
+    line-height: 1.9;
+  }
+  .frame-diagram .field { color: var(--code-accent); }
+  .frame-diagram .note { color: #9aa5a0; }
+
+  .refs { max-width: 68ch; font-size: 0.86rem; }
+  .refs li { color: var(--muted); }
+  .refs a { word-break: break-word; }
+
+  footer.page-foot { max-width: 78rem; margin: 0 auto; padding: 0 1.5rem 3rem; color: var(--muted); font-size: 0.82rem; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a, .chip { transition: color 120ms ease, border-color 120ms ease; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Learning note 06 — transport &amp; protocols</p>
+    <h1 class="title">SSE, Decoded</h1>
+    <p class="dek">
+      What Server-Sent Events actually is, why Sentinel hand-parses it instead
+      of using the browser's built-in class, and how it stacks up against
+      WebSockets, polling, and everything newer.
+    </p>
+    <div class="meta-row">
+      <span><b>Where it lives:</b> <code>sentinel/api/app.py</code> · <code>web/src/api/sse.ts</code></span>
+      <span><b>Wire format:</b> <code>text/event-stream</code> over plain HTTP</span>
+      <span><b>Written:</b> 2026-07-11</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="Table of contents">
+    <p class="toc-label">On this page</p>
+    <ol>
+      <li><a href="#question">1. The question this started with</a></li>
+      <li><a href="#anatomy">2. What SSE actually is</a></li>
+      <li><a href="#eventsource">3. Why not EventSource?</a></li>
+      <li><a href="#websockets">4. SSE vs WebSockets</a></li>
+      <li><a href="#polling">5. vs polling, HTTP/2 push, WebTransport</a></li>
+      <li><a href="#operational">6. Operational realities</a></li>
+      <li><a href="#unused">7. What SSE offers that Sentinel doesn't use</a></li>
+      <li><a href="#decide">8. Quick-reference: what to reach for</a></li>
+      <li><a href="#sources">Sources</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section id="question">
+      <div class="section-head">
+        <span class="section-tag">01 / starting point</span>
+        <h2>The question this started with</h2>
+      </div>
+      <div class="prose">
+        <p>
+          <code>web/src/api/sse.ts</code> reads a stream's raw bytes with
+          <code>response.body.getReader()</code> and hand-splits frames on
+          <code>\n\n</code>. The browser ships a built-in class for exactly
+          this, <code>EventSource</code>. Why isn't Sentinel using it?
+        </p>
+        <p>
+          Short answer, unpacked below: <code>EventSource</code> can only send
+          <code>GET</code> requests with no body and no custom headers.
+          Sentinel's first message of a session goes out as
+          <code>POST /sessions</code> with a JSON body (<code>{"message":
+          ..., "autonomy": ...}</code>) and the SSE stream <em>is</em> that
+          POST's response. There's no way to express that with
+          <code>EventSource</code> at all &mdash; so the hand-rolled parser
+          isn't a missed shortcut, it's the only option once the transport
+          needs a request body.
+        </p>
+      </div>
+    </section>
+
+    <section id="anatomy">
+      <div class="section-head">
+        <span class="section-tag">02 / protocol</span>
+        <h2>What SSE actually is</h2>
+      </div>
+      <div class="prose">
+        <p>
+          Server-Sent Events is not a separate protocol the way WebSockets
+          is &mdash; it's a text convention layered on top of a perfectly
+          ordinary HTTP response. The server sets
+          <code>Content-Type: text/event-stream</code>, never closes the
+          response body, and writes frames to it over time. Each frame is one
+          or more <code>field: value</code> lines followed by a blank line:
+        </p>
+        <div class="frame-diagram">
+<span class="field">data:</span> {"event": "message", "data": {"text": "..."}}<span class="note">  ← the payload; SSE itself doesn't care what's inside</span>
+<span class="note">                                                    (blank line terminates the frame)</span>
+
+<span class="field">event:</span> update<span class="note">                       ← optional: names the event, lets EventSource dispatch by type</span>
+<span class="field">id:</span> 42<span class="note">                             ← optional: client echoes this back on reconnect</span>
+<span class="field">retry:</span> 3000<span class="note">                         ← optional: reconnection delay in ms</span>
+<span class="field">data:</span> {"event": "done", "data": {}}
+</div>
+        <p>
+          Sentinel only ever uses the <code>data:</code> field. Its
+          <code>_sse()</code> helper in <code>sentinel/api/app.py</code> is
+          the entire encoder:
+        </p>
+        <pre>def _sse(event: str, data) -> str:
+    return f<span class="c">"data: {json.dumps({'event': event, 'data': data})}\n\n"</span></pre>
+        <p>
+          The event's type lives <em>inside</em> the JSON payload
+          (<code>{"event": "message", ...}</code>), not in SSE's own
+          <code>event:</code> field. That's a real design choice, not an
+          oversight &mdash; see <a href="#unused">§7</a>.
+        </p>
+        <p>Captured straight from a real running session this session, over plain <code>curl</code>:</p>
+        <pre>$ curl -sN -X POST http://127.0.0.1:8000/sessions \
+    -H <span class="c">"content-type: application/json"</span> -d <span class="c">'{"message":"hello there"}'</span>
+
+data: {<span class="c">"event"</span>: <span class="c">"message"</span>, <span class="c">"data"</span>: {<span class="c">"text"</span>: <span class="c">"To begin, I need to gather the run configuration..."</span>}}
+
+data: {<span class="c">"event"</span>: <span class="c">"done"</span>, <span class="c">"data"</span>: {}}
+</pre>
+        <p>
+          That's the whole protocol on the wire: an ordinary HTTP request, an
+          ordinary streaming HTTP response, readable with nothing more exotic
+          than <code>curl -N</code> (the flag just turns off curl's own output
+          buffering). No handshake, no upgrade, no separate port.
+        </p>
+      </div>
+    </section>
+
+    <section id="eventsource">
+      <div class="section-head">
+        <span class="section-tag">03 / browser api</span>
+        <h2>Why not <code>EventSource</code>?</h2>
+      </div>
+      <div class="prose">
+        <p>
+          <code>EventSource</code> is a real, useful browser API &mdash; it
+          gives you automatic reconnection with backoff, and dispatches typed
+          <code>event:</code> frames as native DOM events, for free. It has
+          three hard restrictions, though, and Sentinel's transport violates
+          all three:
+        </p>
+        <ul>
+          <li><strong>GET only.</strong> No way to issue a <code>POST</code>.</li>
+          <li><strong>No request body.</strong> Everything would have to go in the URL &mdash; awkward and length-limited for a chat message, worse for the JSON config <code>POST /sessions/{id}/autonomy</code> sends.</li>
+          <li><strong>No custom headers.</strong> Not a blocker for Sentinel today (no auth header yet), but would be the moment any auth gets added.</li>
+        </ul>
+        <p>
+          This is common enough that a small ecosystem exists just to work
+          around it &mdash; Microsoft and Azure both publish a
+          <code>fetch-event-source</code> library that layers POST + headers +
+          controllable retry on top of <code>fetch()</code>, parsing frames by
+          hand internally, exactly like <code>web/src/api/sse.ts</code> does.
+          Sentinel's version is about 30 lines because it only needs to
+          support one shape of stream; reaching for a dependency here would
+          have bought back-pressure handling and reconnection Sentinel doesn't
+          currently use, at the cost of one more thing to vendor.
+        </p>
+        <div class="callout">
+          <p class="callout-label">what Sentinel gives up by not using EventSource</p>
+          <p>
+            Automatic reconnection. If a stream drops mid-turn today,
+            <code>consumeStream</code>'s catch block turns it into an
+            <code>error</code> event and the user has to resend &mdash; there's
+            no retry-with-<code>Last-Event-ID</code> recovery. Worth knowing
+            as a deliberate current limitation, not a bug: see <a href="#unused">§7</a>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="websockets">
+      <div class="section-head">
+        <span class="section-tag">04 / comparison</span>
+        <h2>SSE vs WebSockets</h2>
+      </div>
+      <div class="prose">
+        <p>
+          The one-line version: SSE is server&rarr;client only, running over
+          plain HTTP; WebSockets are a genuinely different protocol
+          (<code>ws://</code>/<code>wss://</code>, negotiated via an HTTP
+          upgrade handshake) giving full-duplex, bidirectional messaging over
+          one persistent TCP connection.
+        </p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Dimension</th><th>SSE</th><th>WebSockets</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Direction</td><td>Server &rarr; client only</td><td>Full duplex</td></tr>
+            <tr><td>Transport</td><td>Plain HTTP, no upgrade</td><td>HTTP upgrade to a distinct protocol</td></tr>
+            <tr><td>Client sends data via</td><td>A separate, ordinary HTTP request</td><td>The same open socket</td></tr>
+            <tr><td>Reconnection</td><td>Built into <code>EventSource</code>, with <code>Last-Event-ID</code> replay</td><td>None built in &mdash; the app has to detect the drop and redial</td></tr>
+            <tr><td>Message framing</td><td>Text only, line-delimited</td><td>Text or binary, app-defined framing</td></tr>
+            <tr><td>Firewall / proxy friendliness</td><td>High &mdash; it's just HTTP</td><td>Lower &mdash; some proxies/corporate networks block the upgrade</td></tr>
+            <tr><td>Debuggable with</td><td><code>curl -N</code>, browser network tab</td><td>Needs a WS-aware client (<code>wscat</code>, devtools WS pane)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Does the "agents are moving to WebSockets" trend apply to Sentinel?</h3>
+      <div class="prose">
+        <p>
+          Current industry commentary notes that as AI products grow past
+          basic chat into agent workflows with human-in-the-loop approval and
+          multi-device use, teams increasingly reach for WebSockets. Sentinel
+          already has human-in-the-loop (the <code>confirm()</code> /
+          <code>interrupt()</code> rail) &mdash; so it's worth asking directly
+          whether that applies here.
+        </p>
+        <p>
+          The trend is really about one specific gap: <strong>the server
+          needing to push to a client that isn't mid-request</strong> &mdash; a
+          background job finishing while the tab sits idle, or a second device
+          needing to see a confirmation the first device raised, instantly.
+          Sentinel doesn't have that shape today. Every SSE stream is the
+          direct response body of a request the client just made
+          (<code>POST /sessions/{id}/message</code>,
+          <code>/resume</code>) &mdash; the confirmation card in
+          <code>ConfirmCard.tsx</code> is answered by the same tab making
+          another POST, not by an unprompted server push to an idle
+          connection.
+        </p>
+        <div class="callout finding">
+          <p class="callout-label">where this would actually flip</p>
+          <p>
+            If <code>run_monitor</code> ever needs to notify an
+            <em>idle</em> tab the moment it files an alert ticket, or two
+            browser tabs need to see the same pending confirmation resolve
+            live without a manual refresh, that's exactly the "push outside a
+            request/response cycle" case WebSockets solve and SSE structurally
+            can't. Worth remembering as the concrete trigger for revisiting
+            this, rather than switching pre-emptively.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="polling">
+      <div class="section-head">
+        <span class="section-tag">05 / the rest of the field</span>
+        <h2>vs polling, HTTP/2 push, WebTransport</h2>
+      </div>
+      <div class="prose">
+        <h3>Polling and long polling</h3>
+        <p>
+          Plain polling (ask every N seconds) wastes requests and adds up to N
+          seconds of latency on every update. Long polling (hold the request
+          open until there's something to say, then respond and immediately
+          re-open) gets closer to real push but re-pays a full HTTP
+          request/response cycle for every single message. SSE keeps one
+          request open and streams many messages down it &mdash; it's what
+          long polling was approximating.
+        </p>
+        <h3>HTTP/2 server push &mdash; effectively dead</h3>
+        <p>
+          Worth naming because it sounds related and isn't: HTTP/2 defined a
+          <code>PUSH_PROMISE</code> mechanism for a server to proactively send
+          resources before the client asked. It's a different mechanism from
+          SSE (browser-cache-level, not an application data stream), and it
+          didn't work out &mdash; usage stayed under 1.3% of HTTP/2 sites, with
+          mixed-to-negative real-world performance results. Chrome disabled it
+          by default in 2022 and removed it; Firefox followed in October 2024.
+          Not a factor in any current transport decision.
+        </p>
+        <h3>WebTransport &mdash; promising, not production-ready</h3>
+        <p>
+          Built on QUIC (HTTP/3's transport), WebTransport offers
+          WebSocket-like bidirectional multiplexed streams without
+          head-of-line blocking &mdash; genuinely the more modern design.
+          Current assessment: server-side support across mainstream
+          frameworks is still experimental going into 2026. Something to
+          prototype with, not something to build Sentinel's transport on
+          today.
+        </p>
+      </div>
+    </section>
+
+    <section id="operational">
+      <div class="section-head">
+        <span class="section-tag">06 / production concerns</span>
+        <h2>Operational realities</h2>
+      </div>
+      <div class="prose">
+        <h3>The HTTP/1.1 six-connections-per-origin limit</h3>
+        <p>
+          Browsers cap concurrent connections to one origin at six under
+          HTTP/1.1 (Chrome's default). An open SSE stream occupies one of
+          those six for its <em>entire</em> lifetime, since the response never
+          completes. Six open tabs each holding a live Sentinel session against
+          the same origin would exhaust the pool and queue a seventh. HTTP/2
+          multiplexes many streams over one TCP connection and makes this
+          limit irrelevant (Chrome defaults to ~100 concurrent streams per
+          connection) &mdash; but Sentinel's dev server
+          (<code>uvicorn ... --port 8000</code>, no TLS) speaks HTTP/1.1, so
+          the limit is live today, just unlikely to be hit at one-user scale.
+        </p>
+        <h3>Reverse proxies buffer streams by default &mdash; and that breaks them</h3>
+        <p>
+          Not a concern yet (nothing sits in front of Sentinel's dev server
+          today besides the browser and CORS), but the standard gotcha for
+          whenever that changes: nginx buffers proxied responses by default,
+          which silently turns a stream into "wait for the whole thing, then
+          deliver it" &mdash; defeating the entire point. The fix is
+          <code>proxy_buffering off</code>, an <code>X-Accel-Buffering: no</code>
+          response header, <code>proxy_http_version 1.1</code>, and a long
+          <code>proxy_read_timeout</code> so an idle-but-open stream isn't cut.
+          Every proxy layer in the chain needs it, not just the first one.
+        </p>
+        <h3>Scaling past one process</h3>
+        <p>
+          SSE connections are long-lived, so a load balancer that distributes
+          traffic randomly can strand a reconnecting client on a different
+          server than the one holding its stream. The two production answers
+          are sticky sessions (simple, but a server restart drops every
+          client pinned to it) or a stateless design backed by a shared store
+          like Redis pub/sub (more resilient, more moving parts). Not a
+          decision Sentinel needs yet &mdash; it runs as one process today, and
+          notably the <code>SqliteSaver</code> checkpointer this session's bug
+          fixes revolved around is itself inherently single-writer, so
+          multi-process would need to solve checkpoint storage before SSE
+          fan-out becomes the bottleneck.
+        </p>
+      </div>
+    </section>
+
+    <section id="unused">
+      <div class="section-head">
+        <span class="section-tag">07 / left on the table</span>
+        <h2>What SSE offers that Sentinel doesn't use</h2>
+      </div>
+      <div class="card-grid">
+        <div class="card">
+          <h4>event: (typed events)</h4>
+          <p>SSE can name each frame's type at the protocol level, letting <code>EventSource</code> dispatch listeners per type. Sentinel nests the type inside the JSON payload instead, parsed by one function.</p>
+          <span class="imp">sentinel/api/app.py: _sse()</span>
+        </div>
+        <div class="card">
+          <h4>id: + Last-Event-ID</h4>
+          <p>Lets a reconnecting client tell the server exactly where it left off, so missed frames can be replayed. Requires EventSource (or reimplementing the reconnect logic) to matter at all.</p>
+          <span class="imp">web/src/api/sse.ts</span>
+        </div>
+        <div class="card">
+          <h4>retry: (backoff hint)</h4>
+          <p>Server-controlled reconnect delay. Moot without automatic reconnection in the first place.</p>
+          <span class="imp">n/a today</span>
+        </div>
+      </div>
+      <p class="prose">
+        None of this is a gap to close reflexively &mdash; it's the direct
+        cost of the POST-with-a-body requirement in <a href="#eventsource">§3</a>.
+        The one worth revisiting first if it ever bites in practice is
+        reconnection: today a dropped stream mid-turn just surfaces as an
+        error bubble and the user resends by hand.
+      </p>
+    </section>
+
+    <section id="decide">
+      <div class="section-head">
+        <span class="section-tag">08 / quick reference</span>
+        <h2>What to reach for</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Situation</th><th>Reach for</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Server streams a response to a request the client just made</td><td><span class="chip sse">SSE</span></td></tr>
+            <tr><td>Client needs to send data mid-stream, not via a new request</td><td><span class="chip ws">WebSockets</span></td></tr>
+            <tr><td>Server must push to a client that isn't mid-request (idle tab, other device)</td><td><span class="chip ws">WebSockets</span></td></tr>
+            <tr><td>Infrequent updates, staleness of a few seconds is fine</td><td><span class="chip neither">Polling</span> (simplest, often good enough)</td></tr>
+            <tr><td>Binary payloads (audio, video frames)</td><td><span class="chip ws">WebSockets</span> (SSE is text-only)</td></tr>
+            <tr><td>Must traverse strict corporate proxies/firewalls</td><td><span class="chip sse">SSE</span> (it's just HTTP)</td></tr>
+            <tr><td>Ultra-low-latency multiplexed streams, modern-only clients, willing to prototype</td><td><span class="chip both">WebTransport</span> (not production-ready yet)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="prose">
+        Sentinel's actual traffic &mdash; one bounded stream per request,
+        server-initiated within that request, no idle-client push yet &mdash;
+        sits squarely in SSE's sweet spot. The open question isn't "should
+        this be WebSockets," it's "does <code>run_monitor</code> or multi-tab
+        sync ever need to push to a client that isn't already asking" &mdash;
+        and that's a product decision, not a transport one, for whenever it
+        actually comes up.
+      </p>
+    </section>
+
+    <section id="sources">
+      <div class="section-head">
+        <span class="section-tag">/ sources</span>
+        <h2>Sources</h2>
+      </div>
+      <ul class="refs">
+        <li><a href="https://html.spec.whatwg.org/multipage/server-sent-events.html">Server-sent events — WHATWG HTML Standard</a></li>
+        <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events">Using server-sent events — MDN</a></li>
+        <li><a href="https://websocket.org/comparisons/sse/">WebSocket vs SSE: Which One Should You Use? — WebSocket.org</a></li>
+        <li><a href="https://ably.com/blog/websockets-vs-sse">WebSockets vs Server-Sent Events: Key differences and which to use in 2026 — Ably</a></li>
+        <li><a href="https://github.com/Azure/fetch-event-source">Azure/fetch-event-source — GitHub</a></li>
+        <li><a href="https://gist.github.com/bayotop/a8c503348fdcf12200257384809b1b61">Sending arbitrary Last-Event-ID header values across origins using EventSource</a></li>
+        <li><a href="https://www.javascriptroom.com/blog/server-sent-events-and-browser-limits/">Server Sent Events Browser Limits — javascriptroom.com</a></li>
+        <li><a href="https://blog.pranshu-raj.me/posts/exploring-sse/">Scaling Server Sent Events — a practical guide to 28,000+ concurrent connections</a></li>
+        <li><a href="https://oneuptime.com/blog/post/2025-12-16-server-sent-events-nginx/view">How to Configure Server-Sent Events Through Nginx — OneUptime</a></li>
+        <li><a href="https://aptuz.com/blog/websockets-vs-sse-vs-webtransports/">WebSockets vs SSE vs WebTransport: Which Real-Time Web Protocol Is Best in 2025?</a></li>
+        <li><a href="https://developer.chrome.com/blog/removing-push">Remove HTTP/2 Server Push from Chrome — Chrome for Developers</a></li>
+        <li><a href="https://engineering.surveysparrow.com/scaling-real-time-applications-with-server-sent-events-sse-abd91f70a5c9">Scaling Real-Time Applications with SSE — SurveySparrow Engineering</a></li>
+        <li><a href="https://www.charlessieg.com/articles/real-time-messaging-protocols-grpc-websocket-sse-deep-dive.html">Real-Time Messaging Protocols: WebSockets, SSE, gRPC, Long Polling, and MQTT Compared</a></li>
+      </ul>
+    </section>
+
+  </main>
+</div>
+
+<footer class="page-foot">
+  Companion to <code>docs/learning/05-harness-engineering.html</code> — same
+  learning-notes series. Grounded in Sentinel's actual transport code, not a
+  generic protocol primer.
+</footer>

@@ -46,6 +46,7 @@ Everything below is on `main` (dashboard work landed via PR #4: https://github.c
 
 ## V2 - vision (later)
 
+- **Real-environment simulator and telemetry integration.** A separate multi-machine simulator should feed Sentinel through a public ingestion API and exercise degradation, drift, missing sensors, malformed telemetry, and internal agent/model failures. The UI should expose this as an explicitly simulated external integration. See `docs/ideas/real-environment-simulator.md` for the captured concept and open design questions.
 - **Adopt LangChain `create_agent`** to harness the sub-agents more idiomatically instead of hand-wired nodes. Deliberately deferred out of V1 (not started, not partially done): `create_agent` gives a prebuilt ReAct-style loop, while the interviewer is a scripted agenda, so it needs its own design pass on which sub-agent (if any) becomes a `create_agent` agent vs stays code-driven.
 - **Genuinely autonomous agents.** Agents that decide for themselves, monitor continuously, and take real actions - beyond the current mock ticket write in `monitor.py`. This milestone needs its own design pass with real safety rails, since an agent taking real maintenance actions is the highest-risk surface.
 - **From the design doc's post-MVP list** (`docs/pdm-agent-design.md`): an append-only event stream, real (non-mock) actions, and dataset-agnostic support (today it is FD001-specific).

@@ -4,6 +4,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Add durable project-specific notes here as they are discovered through real work.
 
+## Agent skills
+
+### Issue tracker
+
+Tasks and PRDs use local Markdown under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-role vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Sentinel uses a single root `CONTEXT.md` and system-wide ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Architecture (three layers)
 
 DS core (`sentinel/core/*.py`, M1) -> agent layer (`sentinel/agents/`, `sentinel/llm/`, M2/V1) -> API (`sentinel/api/`).
@@ -46,6 +60,14 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   (`_CONFIRM`) instead of asking cold. Low confidence -> ask normally. Never invent values.
 - LLM access goes through the seam in `sentinel/llm/provider.py` (`Provider` protocol).
   Never import `anthropic`/`groq` outside that file.
+- The V2 system prompt separates internal tool execution from user-facing language.
+  Suggested next steps must describe achievable outcomes in product language, never tool
+  names, argument fields, schemas, invocation instructions, or unsupported capabilities.
+  Prompt behavior contracts live in `tests/test_prompts.py`; preserve the grounded examples
+  and capability boundary when adding tools.
+- Model fallback is credential-aware: `build_agent()` installs `ModelFallbackMiddleware`
+  only when the alternate provider has a configured key. Corrective feedback must remain
+  deterministic for auth errors and must never raise if its cheap-model fallback is also down.
 - **Domain knowledge lives in `sentinel/agents/domain_context.py`** (datasets/metrics
   glossary), not in prompt strings. The report writer and interviewer inject
   `domain_context.glossary()` for grounding. Adding a dataset/metric/model/technique =
@@ -75,3 +97,7 @@ Design lives in `docs/pdm-agent-design.md`; learning notes in `docs/learning/`.
   API: `uv run uvicorn "sentinel.api.app:create_app" --factory` (`POST /sessions`,
   `POST /sessions/{id}/resume`, `GET /sessions/{id}`, all SSE where relevant - see
   `sentinel/api/app.py`). Monitor's mock action writes tickets to `artifacts/tickets/`.
+- Frontend startup hydration must apply only to the thread id found in `localStorage`
+  when the page mounts. A thread id returned by `POST /sessions` belongs to the active
+  SSE request and must not flow through `selectThread()`, because that function aborts
+  in-flight streams before loading a snapshot. Regression coverage is in `web/src/App.test.tsx`.
