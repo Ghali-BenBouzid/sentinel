@@ -8,7 +8,7 @@ interface ConfirmCardProps {
 
 export function ConfirmCard({ pending, onChoose, disabled }: ConfirmCardProps) {
   return (
-    <div className="confirm">
+    <div className="confirm-option">
       <div>
         <strong>{pending.tool}</strong>
         <p>{pending.detail}</p>

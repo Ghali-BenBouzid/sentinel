@@ -4,7 +4,9 @@ import { AutonomyToggle } from "./components/AutonomyToggle";
 import { ChatView } from "./components/ChatView";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { initialSession, Pending, sessionReducer } from "./state/useSession";
+import { Icon } from "./components/Icon";
+import { initialSession, sessionReducer } from "./state/useSession";
+import type { Pending } from "./state/useSession";
 import "./styles.css";
 
 function snapshotPending(items: { interrupt: string; [k: string]: unknown }[]): Pending[] {
@@ -12,6 +14,7 @@ function snapshotPending(items: { interrupt: string; [k: string]: unknown }[]): 
     interrupt: item.interrupt,
     tool: String(item.tool ?? ""),
     detail: String(item.detail ?? ""),
+    decision: null,
   }));
 }
 
@@ -22,7 +25,11 @@ export default function App() {
   );
   const [refreshKey, setRefreshKey] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const streamAbort = useRef<AbortController | null>(null);
+  const initialThreadId = useRef(threadId);
+  const restoredInitialThread = useRef(false);
 
   const abortStream = useCallback(() => {
     streamAbort.current?.abort();
@@ -50,8 +57,12 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (threadId) void selectThread(threadId);
-  }, []);
+    if (restoredInitialThread.current) return;
+    restoredInitialThread.current = true;
+    if (initialThreadId.current) {
+      void selectThread(initialThreadId.current);
+    }
+  }, [selectThread]);
 
   useEffect(() => abortStream, [abortStream]);
 
@@ -64,20 +75,26 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${leftCollapsed ? "left-collapsed" : ""} ${rightCollapsed ? "right-collapsed" : ""}`}>
       <SessionSidebar
         activeThreadId={threadId}
         refreshKey={refreshKey}
+        collapsed={leftCollapsed}
+        onToggle={() => setLeftCollapsed((value) => !value)}
         onSelect={selectThread}
         onNew={newSession}
       />
       <div className="main-column">
         <header className="app-header">
-          <div>
-            <strong>{threadId ? "Active session" : "New session"}</strong>
-            {threadId ? <span>{threadId.slice(0, 8)}</span> : null}
+          <div className="header-title">
+            <strong>Agent Orchestrator</strong>
+            <span className="live-status"><i />Autonomous agent · {threadId ? "connected" : "ready for a new session"}</span>
           </div>
-          <AutonomyToggle threadId={threadId} />
+          <div className="header-actions">
+            <AutonomyToggle threadId={threadId} />
+            <button className="new-task-button" type="button" onClick={newSession}><Icon name="plus" size={14} />New task</button>
+            <button className="icon-button" type="button" onClick={() => setRightCollapsed((value) => !value)} aria-label="Toggle operations panel"><Icon name="settings" size={15} /></button>
+          </div>
         </header>
         {loadError ? <p className="load-error">{loadError}</p> : null}
         <div className="workspace">
@@ -90,9 +107,10 @@ export default function App() {
             onSessionStarted={() => setRefreshKey((key) => key + 1)}
             onTurnFinished={() => setRefreshKey((key) => key + 1)}
           />
-          <LeaderboardPanel threadId={threadId} />
+          {!rightCollapsed && <LeaderboardPanel threadId={threadId} state={state} />}
         </div>
       </div>
+      {rightCollapsed && <button className="panel-reopen" type="button" onClick={() => setRightCollapsed(false)} aria-label="Open operations panel"><Icon name="chevron" size={13} /></button>}
     </main>
   );
 }

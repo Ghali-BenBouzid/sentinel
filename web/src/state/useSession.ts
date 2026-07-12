@@ -5,6 +5,18 @@ export interface Bubble {
   kind: "user" | "agent" | "tool_call" | "tool_result" | "error";
   text: string;
   name?: string;
+  time?: string;
+}
+
+export interface ActivityItem {
+  label: string;
+  status: "done" | "running";
+}
+
+export interface AgentActivity {
+  label: string;
+  progress: number;
+  recent: ActivityItem[];
 }
 
 export interface Pending {
@@ -18,6 +30,7 @@ export interface SessionState {
   transcript: Bubble[];
   pending: Pending[];
   streaming: boolean;
+  activity: AgentActivity;
 }
 
 export type SessionAction =
@@ -34,10 +47,16 @@ export const initialSession: SessionState = {
   transcript: [],
   pending: [],
   streaming: false,
+  activity: { label: "Ready for a task", progress: 0, recent: [] },
 };
 
 let seq = 0;
 const nextId = () => `b${seq++}`;
+const now = () =>
+  new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date());
 
 export function sessionReducer(
   state: SessionState,
@@ -53,7 +72,7 @@ export function sessionReducer(
         ...state,
         transcript: [
           ...state.transcript,
-          { id: nextId(), kind: "user", text: action.text },
+          { id: nextId(), kind: "user", text: action.text, time: now() },
         ],
       };
     case "hydrate":
@@ -64,6 +83,7 @@ export function sessionReducer(
           kind: m.role === "agent" ? "agent" : m.role,
           text: m.content,
           name: m.name,
+          time: "",
         })),
       };
     case "setPending":
@@ -85,19 +105,39 @@ export function sessionReducer(
 function applyEvent(state: SessionState, ev: SentinelEvent): SessionState {
   switch (ev.event) {
     case "message":
-      return push(state, { kind: "agent", text: (ev.data as { text: string }).text });
+      return push(state, {
+        kind: "agent",
+        text: (ev.data as { text: string }).text,
+        time: now(),
+      });
     case "tool_call": {
       const d = ev.data as { name: string; args: unknown };
-      return push(state, { kind: "tool_call", text: JSON.stringify(d.args), name: d.name });
+      return {
+        ...push(state, {
+          kind: "tool_call",
+          text: JSON.stringify(d.args),
+          name: d.name,
+          time: now(),
+        }),
+        activity: activity(state, d.name, "running"),
+      };
     }
     case "tool_result": {
       const d = ev.data as { name: string; text: string };
-      return push(state, { kind: "tool_result", text: d.text, name: d.name });
+      return {
+        ...push(state, { kind: "tool_result", text: d.text, name: d.name, time: now() }),
+        activity: activity(state, d.name, "done"),
+      };
     }
     case "error":
       return {
-        ...push(state, { kind: "error", text: (ev.data as { message: string }).message }),
+        ...push(state, {
+          kind: "error",
+          text: (ev.data as { message: string }).message,
+          time: now(),
+        }),
         streaming: false,
+        activity: { ...state.activity, label: "Operation failed" },
       };
     case "confirm": {
       // Terminal: emitted in place of `done`, so also clear streaming.
@@ -112,7 +152,45 @@ function applyEvent(state: SessionState, ev: SentinelEvent): SessionState {
       };
     }
     case "done":
-      return { ...state, streaming: false };
+      return {
+        ...state,
+        streaming: false,
+        activity: { ...state.activity, label: "Task complete", progress: 100 },
+      };
+    case "stage": {
+      const data = ev.data as { text?: string };
+      return {
+        ...state,
+        activity: { ...state.activity, label: data.text || "Working" },
+      };
+    }
+    case "model_training": {
+      const data = ev.data as { name?: string; index?: number; total?: number };
+      const total = Math.max(data.total || 1, 1);
+      return {
+        ...state,
+        activity: {
+          label: `Training ${data.name || "model"}`,
+          progress: Math.round((((data.index || 1) - 1) / total) * 100),
+          recent: state.activity.recent,
+        },
+      };
+    }
+    case "model_trained": {
+      const data = ev.data as { name?: string; index?: number; total?: number };
+      const total = Math.max(data.total || 1, 1);
+      return {
+        ...state,
+        activity: {
+          label: `Trained ${data.name || "model"}`,
+          progress: Math.round(((data.index || 1) / total) * 100),
+          recent: [
+            { label: `Trained ${data.name || "model"}`, status: "done" as const },
+            ...state.activity.recent,
+          ].slice(0, 4),
+        },
+      };
+    }
     default:
       // Custom/progress events (notify, auto_approved, stage, model_training,
       // model_trained, ...) - ignored here; a progress line consumes them in the view.
@@ -122,4 +200,19 @@ function applyEvent(state: SessionState, ev: SentinelEvent): SessionState {
 
 function push(state: SessionState, b: Omit<Bubble, "id">): SessionState {
   return { ...state, transcript: [...state.transcript, { id: nextId(), ...b }] };
+}
+
+function activity(
+  state: SessionState,
+  label: string,
+  status: "done" | "running",
+): AgentActivity {
+  return {
+    label: status === "done" ? `Completed ${label}` : `Running ${label}`,
+    progress: status === "done" ? 100 : state.activity.progress,
+    recent: [
+      { label, status },
+      ...state.activity.recent.filter((item) => item.label !== label),
+    ].slice(0, 4),
+  };
 }

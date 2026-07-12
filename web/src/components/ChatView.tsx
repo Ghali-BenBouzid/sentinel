@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as client from "../api/client";
 import type { SessionAction, SessionState } from "../state/useSession";
 import { consumeStream } from "../state/useStream";
 import { ConfirmCard } from "./ConfirmCard";
+import { Icon } from "./Icon";
 import { Message } from "./Message";
 
 interface ChatViewProps {
@@ -26,42 +27,58 @@ export function ChatView({
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [resumeBusy, setResumeBusy] = useState(false);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight });
+  }, [state.transcript.length, state.pending.length, state.streaming]);
 
   async function send() {
     const text = input.trim();
     if (!text || state.streaming) return;
     setInput("");
     dispatch({ type: "user", text });
+    dispatch({ type: "start" });
     const controller = new AbortController();
     streamAbort.current = controller;
-    let tid = threadId;
-    let response: Response;
-    if (!tid) {
-      const started = await client.startSession(text, undefined, controller.signal);
-      tid = started.threadId;
-      response = started.response;
-      setThreadId(tid);
-      localStorage.setItem("sentinel.thread", tid);
-      onSessionStarted();
-    } else {
-      response = await client.sendMessage(tid, text, controller.signal);
+    try {
+      let tid = threadId;
+      let response: Response;
+      if (!tid) {
+        const started = await client.startSession(text, undefined, controller.signal);
+        tid = started.threadId;
+        response = started.response;
+        setThreadId(tid);
+        localStorage.setItem("sentinel.thread", tid);
+        onSessionStarted();
+      } else {
+        response = await client.sendMessage(tid, text, controller.signal);
+      }
+      await consumeStream(response, dispatch);
+    } catch (err) {
+      if ((err as Error)?.name !== "AbortError") {
+        dispatch({
+          type: "event",
+          event: { event: "error", data: { message: String(err) } },
+        });
+      }
+    } finally {
+      streamAbort.current = null;
+      onTurnFinished();
     }
-    await consumeStream(response, dispatch);
-    streamAbort.current = null;
-    onTurnFinished();
   }
 
   function choose(interrupt: string, value: "yes" | "no") {
-    if (resumeBusy) return;
-    dispatch({ type: "choose", interrupt, decision: value });
+    if (!resumeBusy) dispatch({ type: "choose", interrupt, decision: value });
   }
 
   async function submitDecisions() {
     if (!threadId || resumeBusy) return;
-    if (state.pending.length === 0 || !state.pending.every((p) => p.decision !== null)) return;
+    if (state.pending.length === 0 || !state.pending.every((p) => p.decision)) return;
     setResumeBusy(true);
-    const answers: Record<string, string> = {};
-    for (const p of state.pending) answers[p.interrupt] = p.decision as string;
+    const answers = Object.fromEntries(
+      state.pending.map((p) => [p.interrupt, p.decision as string]),
+    );
     const controller = new AbortController();
     streamAbort.current = controller;
     dispatch({ type: "resolveAll" });
@@ -75,41 +92,80 @@ export function ChatView({
     }
   }
 
+  const canSend = input.trim().length > 0 && !state.streaming;
+
   return (
-    <section className="app">
-      <section className="transcript">
-        {state.transcript.map((bubble) => (
-          <Message key={bubble.id} bubble={bubble} />
-        ))}
-        {state.pending.map((p) => (
-          <ConfirmCard
-            key={p.interrupt}
-            pending={p}
-            disabled={resumeBusy}
-            onChoose={(value) => choose(p.interrupt, value)}
+    <section className="chat-workspace">
+      <div className="transcript" ref={transcriptRef}>
+        <div className="transcript-inner">
+          {state.transcript.length === 0 && state.pending.length === 0 ? (
+            <div className="empty-chat">
+              <span><Icon name="agent" size={22} /></span>
+              <h2>New session started</h2>
+              <p>Ask the agent to inspect, train, compare, report, or monitor. Nothing has run yet.</p>
+            </div>
+          ) : null}
+          {state.transcript.map((bubble) => (
+            <Message key={bubble.id} bubble={bubble} />
+          ))}
+          {state.pending.length > 0 && (
+            <section className="confirmation-card">
+              <div className="message-header"><span className="agent-mark"><Icon name="agent" size={12} /></span><strong>Agent</strong></div>
+              <div className="confirmation-body">
+                <p>I need your approval before I continue.</p>
+                {state.pending.map((pending) => (
+                  <ConfirmCard
+                    key={pending.interrupt}
+                    pending={pending}
+                    disabled={resumeBusy}
+                    onChoose={(value) => choose(pending.interrupt, value)}
+                  />
+                ))}
+                <button
+                  className="primary-button submit-decisions"
+                  type="button"
+                  onClick={submitDecisions}
+                  disabled={resumeBusy || !state.pending.every((p) => p.decision)}
+                >
+                  Submit responses
+                </button>
+              </div>
+            </section>
+          )}
+          {state.streaming && (
+            <div className="working-indicator" role="status">
+              <span /><span /><span /> working
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="composer-wrap">
+        <div className="composer">
+          <textarea
+            value={input}
+            disabled={state.streaming}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            rows={2}
+            placeholder="Ask the agent to analyze, train, compare…"
           />
-        ))}
-        {state.pending.length > 0 && (
-          <button
-            type="button"
-            onClick={submitDecisions}
-            disabled={resumeBusy || !state.pending.every((p) => p.decision !== null)}
-          >
-            Submit responses
-          </button>
-        )}
-      </section>
-      <div className="composer">
-        <input
-          value={input}
-          disabled={state.streaming}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Message the agent..."
-        />
-        <button onClick={send} disabled={state.streaming}>
-          Send
-        </button>
+          <div className="composer-actions">
+            <div>
+              <button type="button" disabled title="Dataset attachment API is not available yet"><Icon name="database" size={13} /> Attach dataset</button>
+              <button type="button" disabled title="Source integration is planned"><Icon name="integrations" size={13} /> Connect source</button>
+            </div>
+            <button className="send-button" aria-label="Send message" type="button" onClick={send} disabled={!canSend}>
+              <Icon name="send" size={15} />
+            </button>
+          </div>
+        </div>
+        <p className="disclaimer">The agent can make mistakes. Always validate important results before acting on them.</p>
       </div>
     </section>
   );

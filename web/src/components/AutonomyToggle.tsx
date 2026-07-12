@@ -36,9 +36,9 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
     };
   }, [threadId]);
 
-  async function toggle() {
+  async function setAutonomy(next: Autonomy) {
     if (!threadId || loading) return;
-    const next: Autonomy = value === "guarded" ? "autonomous" : "guarded";
+    if (next === value) return;
     setLoading(true);
     try {
       const result = await client.setAutonomy(threadId, next);
@@ -55,9 +55,19 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
 
   return (
     <div className="autonomy-control">
-      <button type="button" onClick={toggle} disabled={!threadId || loading}>
-        {value === "guarded" ? "Guarded" : "Autonomous"}
-      </button>
+      <div className="segmented" aria-label="Agent autonomy">
+        {(["guarded", "autonomous"] as const).map((option) => (
+          <button
+            type="button"
+            key={option}
+            onClick={() => setAutonomy(option)}
+            disabled={!threadId || loading}
+            aria-pressed={value === option}
+          >
+            {option[0].toUpperCase() + option.slice(1)}
+          </button>
+        ))}
+      </div>
       {error ? <span className="control-error">{error}</span> : null}
     </div>
   );

@@ -15,6 +15,7 @@ export const TERMINAL_EVENTS = ["done", "confirm", "error"] as const;
 
 export interface SessionSummary {
   thread_id: string;
+  title: string | null;
   autonomy: string | null;
   last_message: string | null;
 }
@@ -27,6 +28,7 @@ export interface TranscriptMessage {
 }
 
 export interface Snapshot {
+  title: string | null;
   autonomy: string | null;
   pending_confirmations: { interrupt: string; [k: string]: unknown }[];
   last_message: string | null;
