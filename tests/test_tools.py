@@ -158,6 +158,46 @@ def test_inspect_leaderboard_exposes_runner_ups(tmp_path):
     assert "Gradient Boosting Regressor" in out and "gbr" in out
 
 
+def _seed_large_leaderboard(tmp_path):
+    tools, registry = _tools(tmp_path)
+    pkl = tmp_path / "rank.pkl"
+    pkl.write_bytes(b"m")
+    rows = [
+        {"id": f"m{i}", "Model": f"Model {i}", "RMSE": i, "MSE": i * 10}
+        for i in range(1, 21)
+    ]
+    registry.register(
+        family="m1",
+        model_path=pkl,
+        metrics={"rmse": 1, "mae": 1, "r2": 0.9},
+        leaderboard=rows,
+        provenance={"config": {"rul_cap": 125, "window": 5}},
+        test_eval=[],
+    )
+    return tools
+
+
+def test_ranked_candidate_returns_only_requested_leaderboard_row(tmp_path):
+    tools = _seed_large_leaderboard(tmp_path)
+
+    out = tools["leaderboard_candidate"].invoke({"rank": 3})
+
+    assert '"id": "m3"' in out
+    assert "Model 20" not in out
+    assert '"MSE":' not in out
+
+
+def test_inspect_leaderboard_caps_compact_preview(tmp_path):
+    tools = _seed_large_leaderboard(tmp_path)
+
+    out = tools["inspect"].invoke({"what": "leaderboard"})
+
+    assert "20 candidates" in out
+    assert "Model 5" in out
+    assert "Model 6" not in out
+    assert '"MSE":' not in out
+
+
 def test_inspect_leaderboard_without_active_model_is_graceful(tmp_path):
     tools, _ = _tools(tmp_path)
     out = tools["inspect"].invoke({"what": "leaderboard"})

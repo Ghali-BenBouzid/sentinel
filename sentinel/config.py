@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # Harness middleware: retry attempts for a failed model call.
     sentinel_retry_max_attempts: int = 2
 
+    # Model working-context budget. This stays below Groq's 8k limit so the
+    # system prompt and tool schemas retain headroom.
+    sentinel_context_edit_trigger_tokens: int = 4000
+    sentinel_context_edit_clear_at_least_tokens: int = 1200
+    sentinel_context_edit_keep_tool_results: int = 3
+
     # LangSmith reads these canonical names directly from os.environ. Sentinel
     # keeps them in its settings layer first, then exports only this allowlist
     # at process entrypoints via configure_langsmith().

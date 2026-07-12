@@ -247,10 +247,9 @@ def make_tools(
         """Inspect the system: the model list, the leaderboard, or a model's provenance.
 
         - "registry" / "models" / "list": the active model and the registered ids.
-        - "leaderboard": the ranked model-comparison from the active model's training
-          run. Each row has a retrainable PyCaret `id`, the friendly `Model` name, and
-          CV metrics, so runner-up models are visible - e.g. to retrain the second-best,
-          read row index 1 and retrain its `id`.
+        - "leaderboard": a compact summary of the active training run. Use
+          leaderboard_candidate for one exact ranked candidate. The interface renders
+          the complete table directly from its durable registry artifact.
         - "<model_id>": that model's provenance JSON.
         """
         if what in ("registry", "models", "list"):
@@ -264,11 +263,44 @@ def make_tools(
             leaderboard = registry.get(active)["metrics"].get("leaderboard", [])
             if not leaderboard:
                 return "No leaderboard was recorded for the active model."
-            return json.dumps(leaderboard)
+            preview = [
+                {
+                    key: row[key]
+                    for key in ("id", "Model", "RMSE")
+                    if key in row
+                }
+                for row in leaderboard[:5]
+            ]
+            return (
+                f"Leaderboard artifact for active={active}: "
+                f"{len(leaderboard)} candidates; top candidates="
+                f"{json.dumps(preview)}. The complete table is available in "
+                "the Leaderboard panel."
+            )
         try:
             return json.dumps(registry.provenance(what))
         except KeyError:
             return _unknown(what)
+
+    @tool
+    def leaderboard_candidate(rank: int) -> str:
+        """Resolve one 1-based leaderboard rank to its retrainable candidate."""
+        active = registry.active()
+        if active is None:
+            return "No active model yet; train one first to get a leaderboard."
+        leaderboard = registry.get(active)["metrics"].get("leaderboard", [])
+        if rank < 1 or rank > len(leaderboard):
+            return (
+                f"Leaderboard rank {rank} is out of range; "
+                f"choose 1 through {len(leaderboard)}."
+            )
+        row = leaderboard[rank - 1]
+        candidate = {
+            key: row[key]
+            for key in ("id", "Model", "RMSE", "MAE", "R2")
+            if key in row
+        }
+        return f"Rank {rank} of {len(leaderboard)}: {json.dumps(candidate)}"
 
     @tool
     def promote(model_id: str) -> str:
@@ -345,6 +377,7 @@ def make_tools(
         evaluate,
         compare,
         inspect,
+        leaderboard_candidate,
         promote,
         delete,
         write_report_tool,
