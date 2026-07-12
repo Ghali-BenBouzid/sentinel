@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from sentinel.config import Settings, get_settings
+from sentinel.config import Settings, configure_langsmith, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,12 @@ def _clear_settings_cache():
 
 def test_defaults_are_free_tier(monkeypatch, tmp_path):
     # No env, no .env file -> free-tier default, no keys.
-    for var in ("SENTINEL_LLM_PROVIDER", "GROQ_API_KEY", "GROK_API_KEY", "ANTHROPIC_API_KEY"):
+    for var in (
+        "SENTINEL_LLM_PROVIDER",
+        "GROQ_API_KEY",
+        "GROK_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     settings = Settings(_env_file=None)  # ignore any real .env on disk
     assert settings.sentinel_llm_provider == "groq"
@@ -73,3 +78,57 @@ def test_get_settings_is_cached():
 def test_checkpoint_db_path_has_default():
     get_settings.cache_clear()
     assert get_settings().checkpoint_db_path.endswith(".sqlite")
+
+
+def test_harness_limit_settings_have_sane_defaults():
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.sentinel_model_call_thread_limit == 40
+    assert settings.sentinel_model_call_run_limit == 15
+    assert settings.sentinel_tool_call_thread_limit == 40
+    assert settings.sentinel_tool_call_run_limit == 20
+    assert settings.sentinel_retry_max_attempts == 2
+
+
+def test_configure_langsmith_exports_only_langsmith_settings(monkeypatch):
+    for var in (
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_TRACING",
+        "LANGSMITH_PROJECT",
+        "LANGSMITH_ENDPOINT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    settings = Settings(
+        _env_file=None,
+        SENTINEL_LANGSMITH_API_KEY="lsv2_test",
+        SENTINEL_LANGSMITH_TRACING=True,
+        SENTINEL_LANGSMITH_PROJECT="sentinel-tests",
+        SENTINEL_LANGSMITH_ENDPOINT="https://example.test",
+    )
+
+    configure_langsmith(settings)
+
+    assert __import__("os").environ["LANGSMITH_API_KEY"] == "lsv2_test"
+    assert __import__("os").environ["LANGSMITH_TRACING"] == "true"
+    assert __import__("os").environ["LANGSMITH_PROJECT"] == "sentinel-tests"
+    assert __import__("os").environ["LANGSMITH_ENDPOINT"] == "https://example.test"
+    for var in (
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_TRACING",
+        "LANGSMITH_PROJECT",
+        "LANGSMITH_ENDPOINT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_langsmith_canonical_environment_names_are_accepted(monkeypatch):
+    monkeypatch.setenv("LANGSMITH_API_KEY", "canonical-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "canonical-project")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.sentinel_langsmith_api_key == "canonical-key"
+    assert settings.sentinel_langsmith_tracing is True
+    assert settings.sentinel_langsmith_project == "canonical-project"

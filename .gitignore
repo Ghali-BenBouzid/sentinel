@@ -27,3 +27,6 @@ logs.log
 
 # Local secrets / config (only .env.example is committed)
 .env
+
+# Scratch debug notes
+docs/DEBUG_SESSION.md

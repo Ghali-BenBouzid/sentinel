@@ -1,72 +1,23 @@
-"""Graph state and the config the interviewer collects.
+"""The structured run config the agent collects before training.
 
-`AgentState` is the single dict that flows through every LangGraph node. Nodes
-read the fields they need and return a partial dict that LangGraph merges back
-in (last write wins, plain overwrite semantics - no reducers needed here).
-
-Dependencies the nodes need but that aren't *data* (the LLM providers, the
-training function, where to drop tickets, how to ask interview questions) do NOT
-live in state - they're injected via LangGraph's `RunnableConfig["configurable"]`
-so the graph stays a pure state machine and the tests can swap in fakes. See
-`graph.py`.
+In V1 this file also held the graph's `AgentState`/`InterviewProgress` and a log
+helper. Under the V2 agent the graph state is the message history (see
+`sentinel/agents/agent.py`), so all that is gone - this file now carries only the
+`InterviewConfig` shape that the `save_config` tool persists and the trainer/
+report read.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
 
 
 @dataclass
 class InterviewConfig:
-    """The structured setup the interviewer extracts before any training runs.
+    """The structured setup collected before any training runs."""
 
-    The free-text fields (`framing`, `reporting_cadence`, `success_metric`) are
-    for the human/report; the numeric ones are the actual knobs that drive the
-    DS core and the monitor.
-    """
-
-    framing: str  # plain-language: what are we predicting, for what equipment
-    failure_threshold: int  # RUL (cycles) below which the monitor raises an alert
-    reporting_cadence: str  # e.g. "after every training run", "daily"
-    success_metric: str  # e.g. "held-out RMSE under 20 cycles"
-    rul_cap: int = 125  # DS-core knob: piecewise-linear RUL cap
-    window: int = 5  # DS-core knob: rolling-feature window
-
-
-class InterviewProgress(TypedDict, total=False):
-    """Per-turn interview state the graph checkpoints between interviewer turns."""
-
-    phase: str  # "gate" | "field" | "done"
-    active_index: int  # index into interviewer.QUESTIONS
-    values: dict  # resolved field -> value
-    deduced: dict  # field -> confidently-deduced value awaiting confirmation
-    resolved: list  # fields already resolved (order-independent)
-    history: list  # "Assistant: ..."/"User: ..." lines for LLM context
-    next_prompt: str  # the message to interrupt() with on the next turn
-    nonanswers: int  # consecutive non-answers on the active field
-    notices: list  # applied-default / ack lines to stream this turn
-    config: dict  # the finished InterviewConfig as a dict once phase == "done"
-
-
-class AgentState(TypedDict, total=False):
-    """Everything the graph passes between nodes.
-
-    `event` is the wake signal the orchestrator routes on (see `graph.route`);
-    sub-agents set it to the significant thing that just happened, never to raw
-    progress. Everything else is the data those sub-agents produce.
-    """
-
-    event: str  # significant event driving routing (interview_done, run_finished, ...)
-    config: dict  # InterviewConfig as a dict (native only crosses the checkpoint; readers rehydrate)
-    interview: InterviewProgress  # checkpointed per-turn interview state
-    train_state: dict  # serializable training results (`TrainingRun.to_state()`)
-    report: str  # produced by the report writer
-    alerts: list[dict]  # produced by the monitor (one entry per alert/report)
-    error: str  # set if training failed
-    log: list[str]  # human-readable trace of what each node did
-
-
-def append_log(state: AgentState, line: str) -> list[str]:
-    """Return the running log with `line` appended (nodes overwrite `log`)."""
-    return [*state.get("log", []), line]
+    framing: str
+    failure_threshold: int
+    reporting_cadence: str
+    success_metric: str
+    rul_cap: int = 125
+    window: int = 5

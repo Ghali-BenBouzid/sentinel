@@ -54,16 +54,20 @@ def _regression_metrics(y_true, y_pred) -> dict[str, float]:
     }
 
 
-def _rank_models(results: list[tuple[str, dict, object]]) -> tuple[pd.DataFrame, object, str]:
+def _rank_models(results: list[tuple[str, dict, object, str]]) -> tuple[pd.DataFrame, object, str]:
     """Rank per-model CV results by RMSE (lower is better) and pick the winner.
 
-    `results` is one `(friendly_name, cv_metrics, fitted_model)` per trained model.
-    Returns the leaderboard frame (best first), the winning model, and its name.
+    `results` is one `(friendly_name, cv_metrics, fitted_model, model_id)` per
+    trained model. Returns the leaderboard frame (best first - each row carries the
+    retrainable PyCaret `id` and the friendly `Model` name, so runner-up models can
+    be retrained by id, not just admired by name), the winning model, and its name.
     Pure - no PyCaret - so the ranking that decides the winner is unit-testable.
     """
     ordered = sorted(results, key=lambda r: r[1]["RMSE"])
-    leaderboard = pd.DataFrame([{"Model": name, **metrics} for name, metrics, _ in ordered])
-    best_name, _, best_model = ordered[0]
+    leaderboard = pd.DataFrame(
+        [{"id": model_id, "Model": name, **metrics} for name, metrics, _, model_id in ordered]
+    )
+    best_name, _, best_model, _ = ordered[0]
     return leaderboard, best_model, best_name
 
 
@@ -116,7 +120,7 @@ def train_and_evaluate(
     name_of = models()["Name"].to_dict()  # model id -> friendly name ("et" -> "Extra Trees Regressor")
     candidate_ids = list(include) if include is not None else list(name_of)
 
-    results: list[tuple[str, dict, object]] = []
+    results: list[tuple[str, dict, object, str]] = []
     total = len(candidate_ids)
     for index, model_id in enumerate(candidate_ids, start=1):
         name = name_of.get(model_id, str(model_id))
@@ -128,7 +132,7 @@ def train_and_evaluate(
             continue
         mean = pull().loc["Mean"]  # fold-averaged CV metrics for this model
         cv_metrics = {col: float(mean[col]) for col in mean.index if pd.notna(mean[col])}
-        results.append((name, cv_metrics, model))
+        results.append((name, cv_metrics, model, model_id))
         if on_model_end is not None:
             on_model_end(
                 name, index, total,
@@ -167,4 +171,61 @@ def train_and_evaluate(
         metrics=metrics,
         model_path=model_path.with_suffix(".pkl"),
         metrics_path=metrics_path,
+    )
+
+
+def train_one(
+    model_id: str,
+    hyperparameters: dict,
+    train_df: pd.DataFrame,
+    target: str,
+    test_df: pd.DataFrame,
+    artifacts_dir: str | Path = "artifacts",
+    ignore_features: list[str] | None = None,
+    session_id: int = 42,
+    fold: int = 3,
+    on_stage: Callable[..., None] | None = None,
+) -> TrainResult:
+    """Train one named model with explicit hyperparameters and persist it."""
+
+    def _stage(name: str, detail: str = "") -> None:
+        if on_stage is not None:
+            on_stage(name, detail)
+
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    ignore_features = ignore_features or []
+
+    setup(
+        data=train_df,
+        target=target,
+        session_id=session_id,
+        ignore_features=ignore_features,
+        fold=fold,
+        n_jobs=1,
+        verbose=False,
+    )
+    model = create_model(model_id, **hyperparameters)
+    final_model = finalize_model(model)
+
+    _stage("evaluating")
+    preds = predict_model(final_model, data=test_df)
+    y_pred = (
+        preds["prediction_label"]
+        if "prediction_label" in preds
+        else preds.iloc[:, -1]
+    )
+    metrics = _regression_metrics(test_df[target], y_pred)
+
+    _stage("saving")
+    model_path = artifacts_dir / f"retrain_{model_id}"
+    save_model(final_model, str(model_path))
+
+    leaderboard = pd.DataFrame([{"Model": model_id, **metrics}])
+    return TrainResult(
+        leaderboard=leaderboard,
+        best_model=final_model,
+        metrics=metrics,
+        model_path=model_path.with_suffix(".pkl"),
+        metrics_path=artifacts_dir / f"retrain_{model_id}_metrics.json",
     )

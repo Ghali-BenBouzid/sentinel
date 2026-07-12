@@ -12,7 +12,6 @@ The trainer node treats this as a black box, so tests can inject a stub
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -22,15 +21,6 @@ import pandas as pd
 from ..core import automl, data, features
 from ..pipeline import set_seeds
 from .state import InterviewConfig
-
-
-def _records(df: pd.DataFrame) -> list[dict]:
-    """DataFrame -> list of dicts with NATIVE Python types.
-
-    `df.to_dict("records")` leaks numpy scalars (np.int64/np.float64) that the
-    checkpointer's msgpack serializer rejects; the JSON round-trip forces builtins.
-    """
-    return json.loads(df.to_json(orient="records"))
 
 
 def load_predict(model_path: str) -> Callable[[pd.DataFrame], "pd.Series | list[float]"]:
@@ -61,31 +51,12 @@ class TrainingRun:
         the "incoming readings" the monitor steps through.
     predict: maps a feature frame to predicted RUL (built from the saved model).
 
-    Only `to_state()` crosses the graph-state boundary - the live `predict`
-    closure, the DataFrames, and the estimator are not checkpoint-serializable.
+    The registry persists the serializable parts and model path in V2.
     """
 
     result: automl.TrainResult
     test_eval: pd.DataFrame
     predict: Callable[[pd.DataFrame], "pd.Series | list[float]"]
-
-    def to_state(self) -> dict:
-        """Reduce to msgpack-safe native-Python data for the checkpointed state.
-
-        The heavy artifacts are rehydrated downstream: the model from
-        `model_path` (via `load_predict`), `test_eval` from its records.
-        """
-        r = self.result
-        lb = r.leaderboard
-        best = lb.iloc[0]["Model"] if "Model" in lb.columns else type(r.best_model).__name__
-        return {
-            "metrics": {k: float(v) for k, v in r.metrics.items()},
-            "leaderboard": _records(lb),
-            "best_model_name": str(best),
-            "model_path": str(r.model_path),
-            "test_eval": _records(self.test_eval),
-        }
-
 
 # Human-facing text for each coarse training stage. `{detail}` (if present) is
 # filled from the stage's detail arg (e.g. the winning model's name).
@@ -173,3 +144,49 @@ def run_training(config: InterviewConfig, data_dir: str = "data", artifacts_dir:
     predict = load_predict(str(result.model_path))
 
     return TrainingRun(result=result, test_eval=test_eval, predict=predict)
+
+
+def run_retraining(
+    model_id: str,
+    hyperparameters: dict,
+    rul_cap: int,
+    window: int,
+    data_dir: str = "data",
+    artifacts_dir: str = "artifacts",
+) -> TrainingRun:
+    """Load FD001 and retrain one model with explicit hyperparameters."""
+    _, _, on_stage = _training_stream()
+
+    set_seeds()
+    on_stage("loading_data")
+    dataset = data.load_fd001(data_dir=data_dir, rul_cap=rul_cap)
+
+    keep = features.informative_sensors(dataset.train)
+    train_features = features.build_features(
+        dataset.train, keep, window=window
+    )
+    test_features = features.build_features(
+        dataset.test, keep, window=window
+    )
+    test_eval = data.build_test_eval(
+        test_features, dataset.rul_truth, rul_cap=rul_cap
+    )
+
+    result = automl.train_one(
+        model_id,
+        hyperparameters,
+        train_features,
+        target="RUL",
+        test_df=test_eval,
+        artifacts_dir=artifacts_dir,
+        ignore_features=["unit", "cycle"],
+        on_stage=on_stage,
+    )
+
+    on_stage("loading_model")
+    predict = load_predict(str(result.model_path))
+    return TrainingRun(
+        result=result,
+        test_eval=test_eval,
+        predict=predict,
+    )

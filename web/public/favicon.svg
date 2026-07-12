@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <circle cx="60" cy="60" r="42" fill="none" stroke="#002642" stroke-width="7"></circle>
+  <g fill="#002642">
+    <rect x="55" y="5" width="10" height="15" rx="3"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(45 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(90 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(135 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(180 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(225 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(270 60 60)"></rect>
+    <rect x="55" y="5" width="10" height="15" rx="3" transform="rotate(315 60 60)"></rect>
+  </g>
+  <polyline points="27,60 45,60 53,44 63,76 71,52 77,60 93,60" fill="none" stroke="#B83100" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+</svg>

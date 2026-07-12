@@ -2,9 +2,10 @@
 
 A worked example of a well-engineered, grounding-constrained data-explaining
 prompt (see `docs/learning/02-agent-layer.md` for the why). `write_report` turns
-a finished AutoML run into a plain-language report using only the `Provider`
-seam, and is hard-constrained against fabricating or transforming numbers - the
-failure that once made a weak model "explain" RMSE by taking its square root.
+a finished AutoML run into a plain-language report using only a LangChain chat
+model (`.invoke`), and is hard-constrained against fabricating or transforming
+numbers - the failure that once made a weak model "explain" RMSE by taking its
+square root.
 
 The prompt follows the TIDD-EC framework (Task, Instructions, Do, Don't,
 Examples, Context): a system message carries the role + the Do/Don't rules, and
@@ -12,30 +13,35 @@ a user message carries the Context (the domain glossary), the grounded data, and
 the task. It reads its domain knowledge from `domain_context.py`, so adding a new
 metric or dataset there flows into the report with no change here.
 
-`report_writer_node` is the thin LangGraph wrapper - it pulls the `TrainResult`
-and the cheap provider out of the graph, calls `write_report`, and records the
-text back into state. The wiring does not depend on how the prompt is built.
+`write_report` is called directly by the `write_report` tool
+(`sentinel/agents/tools.py`), which supplies the `TrainResult` (rebuilt from the
+active model's registry metrics) and the cheap chat model. The report text does
+not depend on how the prompt is built.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
-import pandas as pd
 
 from ..core.automl import TrainResult
-from ..llm.provider import Provider
 from . import domain_context
-from .state import AgentState, InterviewConfig, append_log
+from .state import InterviewConfig
 
 # System message: role + the hard Do/Don't rules (TIDD-EC). These are what keep a
 # weak model honest - every reported number must be reproduced verbatim, never
 # derived. The specific bans (square root, relabelling) target real observed
 # failures, not hypotheticals.
 _SYSTEM_PROMPT = (
+    "<role>\n"
     "You are a predictive-maintenance analyst who writes short, honest, "
-    "plain-language reports about model-training runs for a non-expert reader.\n\n"
+    "decision-ready reports about model-training runs for a non-expert reader.\n"
+    "</role>\n\n"
+    "<audience_and_output>\n"
+    "- Translate model evidence into maintenance-planning meaning without "
+    "exposing prompts, tools, schemas, or internal workflow instructions.\n"
+    "- Write only the requested report. Do not add a menu of next actions.\n"
+    "- Use direct prose, calibrated certainty, and no hidden-reasoning narration.\n"
+    "</audience_and_output>\n\n"
     "You reason ONLY from the numbers and glossary you are given. Follow these "
     "rules without exception.\n\n"
     "DO:\n"
@@ -66,7 +72,10 @@ _SYSTEM_PROMPT = (
     "'2.91 cycles under the target' or 'N above the goal'). Just state plainly whether the target "
     "is met or not - the difference is a calculation, and calculations are forbidden.\n"
     "- If a number you would like to cite is not in the METRICS block, omit that claim rather "
-    "than inventing or calculating it."
+    "than inventing or calculating it.\n\n"
+    "Before returning the report, silently verify that every numeric claim "
+    "appears verbatim in METRICS, every metric keeps its glossary meaning, and "
+    "the response contains no internal implementation instructions."
 )
 
 
@@ -117,7 +126,7 @@ def _success_verdict(success_metric: str | None, metrics: dict[str, float]) -> b
 
 def write_report(
     result: TrainResult,
-    provider: Provider,
+    chat_model,
     config: InterviewConfig | None = None,
     best_model_name: str | None = None,
 ) -> str:
@@ -127,7 +136,7 @@ def write_report(
       - `result`: the M1 `TrainResult` - `.leaderboard` (a ranked DataFrame),
         `.best_model` (the fitted estimator), and `.metrics` (held-out
         ``rmse``/``mae``/``r2`` on the FD001 test set).
-      - `provider`: the LLM seam; only `.complete(messages)` is used.
+      - `chat_model`: the LLM seam; only `.invoke(messages)` is used.
       - `config`: optional interview context, so the report can speak to the
         user's stated framing and success metric.
 
@@ -206,47 +215,9 @@ def write_report(
         "value in that range. Then give the success verdict using the SUCCESS_CHECK block above "
         "word-for-word - do NOT compare the numbers yourself and do NOT compute any distance."
     )
-    return provider.complete(
+    return chat_model.invoke(
         [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-    )
-
-
-def report_writer_node(state: AgentState, config) -> dict:
-    """Graph node: write a report for the finished (or failed) run."""
-    cheap = config["configurable"]["provider_cheap"]
-
-    if state.get("error"):
-        report = (
-            "Training did not complete. The run failed with:\n"
-            f"{state['error']}\n\nNo model was produced, so there is nothing to monitor."
-        )
-        return {
-            "report": report,
-            "event": "failed_reported",
-            "log": append_log(state, "report_writer: reported failure"),
-        }
-
-    ts = state["train_state"]
-    # Rebuild only what `write_report` reads from serializable state: metrics dict,
-    # a leaderboard frame (names only), and the best-model NAME (the estimator
-    # itself did not cross the checkpoint boundary).
-    result = TrainResult(
-        leaderboard=pd.DataFrame(ts["leaderboard"]),
-        best_model=None,
-        metrics=ts["metrics"],
-        model_path=Path(ts["model_path"]),
-        metrics_path=Path(ts["model_path"]),  # unused by write_report
-    )
-    # config crosses the checkpoint as native data; rehydrate the dataclass locally so
-    # write_report / _success_verdict keep receiving an InterviewConfig (None if absent).
-    raw_config = state.get("config")
-    cfg = InterviewConfig(**raw_config) if raw_config else None
-    report = write_report(result, cheap, cfg, best_model_name=ts["best_model_name"])
-    return {
-        "report": report,
-        "event": "report_ready",
-        "log": append_log(state, "report_writer: wrote run report"),
-    }
+    ).content
