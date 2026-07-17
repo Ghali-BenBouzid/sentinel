@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import * as client from "./api/client";
-import { AutonomyToggle } from "./components/AutonomyToggle";
 import { ChatView } from "./components/ChatView";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
@@ -88,12 +87,10 @@ export default function App() {
         <header className="app-header">
           <div className="header-title">
             <strong>Agent Orchestrator</strong>
-            <span className="live-status"><i />Autonomous agent · {threadId ? "connected" : "ready for a new session"}</span>
+            <span className="live-status"><i />{threadId ? "Connected" : "Ready for a new session"}</span>
           </div>
           <div className="header-actions">
-            <AutonomyToggle threadId={threadId} />
-            <button className="new-task-button" type="button" onClick={newSession}><Icon name="plus" size={14} />New task</button>
-            <button className="icon-button" type="button" onClick={() => setRightCollapsed((value) => !value)} aria-label="Toggle operations panel"><Icon name="settings" size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => setRightCollapsed((value) => !value)} aria-label="Toggle operations panel"><Icon name="panel" size={15} /></button>
           </div>
         </header>
         {loadError ? <p className="load-error">{loadError}</p> : null}
@@ -110,7 +107,7 @@ export default function App() {
           {!rightCollapsed && <LeaderboardPanel threadId={threadId} state={state} />}
         </div>
       </div>
-      {rightCollapsed && <button className="panel-reopen" type="button" onClick={() => setRightCollapsed(false)} aria-label="Open operations panel"><Icon name="chevron" size={13} /></button>}
+      {rightCollapsed && <button className="edge-handle edge-handle-right" type="button" onClick={() => setRightCollapsed(false)} aria-label="Expand operations panel" />}
     </main>
   );
 }
