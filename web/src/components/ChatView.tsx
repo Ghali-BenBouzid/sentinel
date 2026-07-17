@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as client from "../api/client";
 import type { SessionAction, SessionState } from "../state/useSession";
 import { consumeStream } from "../state/useStream";
+import { AutonomyToggle } from "./AutonomyToggle";
 import { ConfirmCard } from "./ConfirmCard";
 import { Icon } from "./Icon";
 import { Message } from "./Message";
@@ -28,10 +29,18 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [resumeBusy, setResumeBusy] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight });
   }, [state.transcript.length, state.pending.length, state.streaming]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   async function send() {
     const text = input.trim();
@@ -96,6 +105,7 @@ export function ChatView({
 
   return (
     <section className="chat-workspace">
+      <AutonomyToggle threadId={threadId} />
       <div className="transcript" ref={transcriptRef}>
         <div className="transcript-inner">
           {state.transcript.length === 0 && state.pending.length === 0 ? (
@@ -143,6 +153,7 @@ export function ChatView({
       <div className="composer-wrap">
         <div className="composer">
           <textarea
+            ref={textareaRef}
             value={input}
             disabled={state.streaming}
             onChange={(event) => setInput(event.target.value)}
@@ -152,7 +163,7 @@ export function ChatView({
                 void send();
               }
             }}
-            rows={2}
+            rows={1}
             placeholder="Ask the agent to analyze, train, compare…"
           />
           <div className="composer-actions">

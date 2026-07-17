@@ -58,18 +58,32 @@ export function SessionSidebar({
           <span className="brand-mark"><img src="/brand/sentinel-mark-reversed.svg" alt="" width={16} height={16} /></span>
           {!collapsed && <span className="brand-name">SENTINEL</span>}
         </button>
-        <button className="icon-button rail-toggle" type="button" onClick={onToggle} aria-label="Toggle navigation">
-          <Icon name="chevron" size={14} />
+        {!collapsed && (
+          <button className="icon-button rail-toggle" type="button" onClick={onToggle} aria-label="Collapse navigation">
+            <Icon name="chevron" size={14} />
+          </button>
+        )}
+      </div>
+
+      <div className="sidebar-new-task">
+        <button className="new-task-button" type="button" onClick={onNew} title="New task">
+          <Icon name="plus" size={14} />
+          {!collapsed && <span>New task</span>}
         </button>
       </div>
 
       <div className="sidebar-scroll">
         <nav className="primary-nav" aria-label="Primary navigation">
           {nav.map(([key, label, icon]) => (
-            <button key={key} className={key === "agent" ? "active" : ""} type="button" title={label}>
+            <button
+              key={key}
+              className={key === "agent" ? "active" : ""}
+              type="button"
+              title={key === "agent" ? label : `${label} page is planned`}
+              disabled={key !== "agent"}
+            >
               <Icon name={icon} />
               {!collapsed && <span>{label}</span>}
-              {!collapsed && key === "alerts" && <small className="nav-badge">0</small>}
             </button>
           ))}
         </nav>
@@ -102,18 +116,15 @@ export function SessionSidebar({
 
       <div className="sidebar-footer">
         {(["integrations", "settings"] as const).map((name) => (
-          <button type="button" key={name} title={name}>
+          <button type="button" key={name} disabled title={`${name[0].toUpperCase() + name.slice(1)} page is planned`}>
             <Icon name={name} />
             {!collapsed && <span>{name[0].toUpperCase() + name.slice(1)}</span>}
           </button>
         ))}
-        {!collapsed && (
-          <div className="user-row">
-            <span className="avatar">EN</span>
-            <span><strong>Emma N.</strong><small>Reliability engineer</small></span>
-          </div>
-        )}
       </div>
+      {collapsed && (
+        <button className="edge-handle" type="button" onClick={onToggle} aria-label="Expand navigation" />
+      )}
     </aside>
   );
 }

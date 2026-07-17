@@ -24,6 +24,7 @@ logs.log
 
 # Local tooling cache
 .impeccable/
+.lavish/
 
 # Local secrets / config (only .env.example is committed)
 .env

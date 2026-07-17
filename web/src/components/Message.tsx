@@ -15,7 +15,6 @@ export function Message({ bubble }: MessageProps) {
           <div>{bubble.text}</div>
           {bubble.time && <time>{bubble.time}</time>}
         </div>
-        <span className="avatar small">EN</span>
       </article>
     );
   }

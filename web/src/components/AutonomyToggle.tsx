@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as client from "../api/client";
 
 type Autonomy = "guarded" | "autonomous";
@@ -7,10 +7,20 @@ interface AutonomyToggleProps {
   threadId: string | null;
 }
 
+const DESCRIPTIONS: Record<Autonomy, string> = {
+  guarded: "Asks for approval before training, promoting, deleting, or monitor actions.",
+  autonomous: "Acts on training, promoting, deleting, and monitor actions without waiting for approval.",
+};
+
+const CONFIRM_MS = 2200;
+
 export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
   const [value, setValue] = useState<Autonomy>("guarded");
+  const [hovered, setHovered] = useState<Autonomy | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirmTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (!threadId) {
@@ -36,6 +46,10 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
     };
   }, [threadId]);
 
+  useEffect(() => () => {
+    if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
+  }, []);
+
   async function setAutonomy(next: Autonomy) {
     if (!threadId || loading) return;
     if (next === value) return;
@@ -44,6 +58,9 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
       const result = await client.setAutonomy(threadId, next);
       if (result.autonomy === "guarded" || result.autonomy === "autonomous") {
         setValue(result.autonomy);
+        setConfirmed(true);
+        if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
+        confirmTimer.current = window.setTimeout(() => setConfirmed(false), CONFIRM_MS);
       }
       setError(null);
     } catch (err) {
@@ -53,14 +70,28 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
     }
   }
 
+  const displayed = hovered ?? value;
+
   return (
-    <div className="autonomy-control">
+    <div className="autonomy-bar">
+      <div className="autonomy-bar-label">
+        <strong>Agent mode</strong>
+        {error ? (
+          <span className="control-error">{error}</span>
+        ) : (
+          <span className={confirmed && !hovered ? "confirmed" : undefined}>{DESCRIPTIONS[displayed]}</span>
+        )}
+      </div>
       <div className="segmented" aria-label="Agent autonomy">
         {(["guarded", "autonomous"] as const).map((option) => (
           <button
             type="button"
             key={option}
             onClick={() => setAutonomy(option)}
+            onMouseEnter={() => setHovered(option)}
+            onMouseLeave={() => setHovered(null)}
+            onFocus={() => setHovered(option)}
+            onBlur={() => setHovered(null)}
             disabled={!threadId || loading}
             aria-pressed={value === option}
           >
@@ -68,7 +99,6 @@ export function AutonomyToggle({ threadId }: AutonomyToggleProps) {
           </button>
         ))}
       </div>
-      {error ? <span className="control-error">{error}</span> : null}
     </div>
   );
 }

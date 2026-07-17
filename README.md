@@ -158,9 +158,13 @@ uv run uvicorn "sentinel.api.app:create_app" --factory
 ```
 
 - `POST /sessions` starts a session and optionally accepts `message` and `autonomy`.
+- `GET /sessions` lists sessions (id, title, autonomy, last message), newest first.
 - `POST /sessions/{id}/message` appends a new conversation turn.
-- `POST /sessions/{id}/resume` answers pending confirmation ids.
-- `GET /sessions/{id}` returns autonomy, the last message, and pending confirmations.
+- `POST /sessions/{id}/resume` answers pending confirmations - `{"answers": {"<id>:<index>": "yes"}}`
+  for the bundled-decision shape, or `{"answer": "yes"}` when exactly one is pending.
+- `POST /sessions/{id}/autonomy` switches a session between `guarded` and `autonomous` mid-run.
+- `GET /sessions/{id}` returns title, autonomy, transcript, and pending confirmations.
+- `GET /sessions/{id}/leaderboard` returns the active model id and its ranked comparison rows.
 
 Streams can emit `message`, `tool_call`, `tool_result`, `stage`,
 `model_training`, `model_trained`, `confirm`, `auto_approved`, `done`, and
@@ -179,6 +183,11 @@ curl -N -X POST localhost:8000/sessions/<id>/message \
 curl -N -X POST localhost:8000/sessions/<id>/resume \
      -H 'content-type: application/json' -d '{"answer": "yes"}'
 ```
+
+### Web UI
+
+`web/` is a Vite + React front end over this API (session sidebar, chat with
+confirmation rail, model leaderboard). See `web/README.md` to run it.
 
 ## Tests, lint, and CI
 
